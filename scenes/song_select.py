@@ -1257,6 +1257,13 @@ class SongSelectScene(Scene):
             if not self._mods_overridden:
                 self._active_mods = normalize_mods(summary.mods)
 
+    def _toggle_single_selected_replay(self, path: str) -> None:
+        normalized_path = _normalize_replay_path(path) or path
+        if self._selected_replay == normalized_path:
+            self._clear_replay_selection()
+            return
+        self._set_single_selected_replay(normalized_path)
+
     def _toggle_multi_selected_replay(self, path: str) -> None:
         normalized_path = _normalize_replay_path(path) or path
         self._ensure_replay_summary(normalized_path)
@@ -2187,10 +2194,7 @@ class SongSelectScene(Scene):
                     if self._multi_replay_enabled:
                         self._toggle_multi_selected_replay(rpath)
                     else:
-                        if self._selected_replay == rpath:
-                            self._play_selected()
-                        else:
-                            self._set_single_selected_replay(rpath)
+                        self._toggle_single_selected_replay(rpath)
                     return
             return
 
