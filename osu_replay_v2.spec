@@ -55,6 +55,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="osu_replay",
+    icon=str(project_root / "static" / "icon.ico"),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
