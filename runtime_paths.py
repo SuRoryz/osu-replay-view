@@ -15,6 +15,8 @@ def app_root() -> Path:
 
 APP_ROOT = app_root()
 ENV_FILE = APP_ROOT / ".env"
+STATIC_DIR = APP_ROOT / "static"
+APP_ICON_PATH = STATIC_DIR / "icon.ico"
 SETTINGS_PATH = APP_ROOT / "app_settings.json"
 MAPS_DIR = APP_ROOT / "maps"
 REPLAYS_DIR = APP_ROOT / "replays"

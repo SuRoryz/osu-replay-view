@@ -24,6 +24,9 @@ hiddenimports = sorted(
 )
 
 datas = collect_data_files("moderngl_window")
+datas += [
+    (str(project_root / "static" / "icon.ico"), "static"),
+]
 
 excludes = [
     "matplotlib",

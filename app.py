@@ -12,10 +12,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import moderngl_window as mglw
+import pyglet
 
 from build_version import get_display_version
 from osu_map.scanner import BeatmapScanner
-from runtime_paths import APP_ROOT, MAPS_DIR, SETTINGS_PATH, ensure_runtime_dirs
+from runtime_paths import APP_ICON_PATH, APP_ROOT, MAPS_DIR, SETTINGS_PATH, ensure_runtime_dirs
 from social import SocialClient
 from social.models import ChatMessagePayload, SharedReplay
 from ui.alert_overlay import AlertOverlay
@@ -143,6 +144,7 @@ class App(mglw.WindowConfig):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         ensure_runtime_dirs()
+        self._apply_window_icon()
         self.wnd.exit_key = None
         self.wnd.fixed_aspect_ratio = None
         self.settings = AppSettings.load(self.settings_path)
@@ -178,6 +180,29 @@ class App(mglw.WindowConfig):
         self.social_client.command_context_provider = self._social_command_context
         self.social_client.chat_payload_handler = self._handle_chat_message_payload
         self.social_client.download_event_handler = self._handle_download_event
+
+    def _apply_window_icon(self) -> None:
+        if not APP_ICON_PATH.is_file():
+            return
+        try:
+            image = pyglet.image.load(str(APP_ICON_PATH))
+        except Exception:
+            return
+        for attr in ("set_icon",):
+            setter = getattr(self.wnd, attr, None)
+            if callable(setter):
+                try:
+                    setter(image)
+                    return
+                except Exception:
+                    pass
+        native_window = getattr(self.wnd, "_window", None)
+        setter = getattr(native_window, "set_icon", None)
+        if callable(setter):
+            try:
+                setter(image)
+            except Exception:
+                pass
 
         from scenes.song_select import SongSelectScene
         self._scene = SongSelectScene(self)
