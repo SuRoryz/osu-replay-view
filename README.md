@@ -1,6 +1,6 @@
 # DISCLAIMER
 
-`osu_replay_v2` originally was as an experiment in creating a modern and FAST Python application using moderngl. The codebase, the decisions made (especially the experiments with Rust and Cython), and the functionality iself can be low-quality.
+`osu_replay_view` originally was as an experiment in creating a modern and FAST Python application using moderngl. The codebase, the decisions made (especially the experiments with Rust and Cython), and the functionality iself can be low-quality.
 
 ## What is in the repo
 
