@@ -1,0 +1,13 @@
+moderngl>=5.12.0
+moderngl-window[pyglet]>=2.4.0
+pyrr>=0.10.3
+numpy>=1.24.0
+scipy>=1.13.0
+osupyparser>=1.0.7
+pygame>=2.5.0
+Pillow>=10.0.0
+pydub>=0.25.1
+matplotlib>=3.10.0
+rosu-pp-py>=3.1.0
+requests>=2.32.0
+websocket-client>=1.8.0

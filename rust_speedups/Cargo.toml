@@ -1,0 +1,12 @@
+[package]
+name = "osu_replay_rust_speedups"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "_rust_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+numpy = "0.22"

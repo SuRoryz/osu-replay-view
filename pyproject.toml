@@ -1,0 +1,12 @@
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+norecursedirs = [
+    ".venv",
+    ".venv311",
+    ".venv312",
+    ".venv313",
+    "venv",
+    "build",
+    "dist",
+]
