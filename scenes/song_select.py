@@ -634,13 +634,19 @@ class SongSelectScene(Scene):
             return None
         return self._sets[self._selected_idx]
 
-    def _refresh_selected_map_state(self, *, clear_replays: bool = True) -> None:
+    def _refresh_selected_map_state(
+        self,
+        *,
+        clear_replays: bool = True,
+        restart_preview: bool = True,
+    ) -> None:
         self._mark_flattened_list_dirty()
         if clear_replays:
             self._clear_replay_selection()
         self._center_scroll()
-        self._stop_preview()
-        self._start_preview()
+        if restart_preview:
+            self._stop_preview()
+            self._start_preview()
         bset = self._selected_set()
         if bset is not None:
             self.app.backgrounds.load(bset.background_path)
@@ -656,9 +662,13 @@ class SongSelectScene(Scene):
             if clear_replays:
                 self._clear_replay_selection()
             return True
+        same_set = (set_idx == self._selected_idx)
         self._selected_idx = set_idx
         self._selected_diff_idx = next_diff
-        self._refresh_selected_map_state(clear_replays=clear_replays)
+        self._refresh_selected_map_state(
+            clear_replays=clear_replays,
+            restart_preview=not same_set,
+        )
         return True
 
     def _find_selection_for_md5(self, beatmap_md5: str) -> tuple[int, int] | None:
@@ -865,9 +875,10 @@ class SongSelectScene(Scene):
         if target is None:
             return False
         set_idx, diff_idx = target
+        same_set = (set_idx == self._selected_idx)
         self._selected_idx = set_idx
         self._selected_diff_idx = diff_idx
-        self._refresh_selected_map_state(clear_replays=True)
+        self._refresh_selected_map_state(clear_replays=True, restart_preview=not same_set)
         self._active_mods = normalize_mods(beatmap.mods)
         self._mods_overridden = True
         return True
@@ -2044,13 +2055,13 @@ class SongSelectScene(Scene):
                 return
             self.app.wnd.close()
         elif key == keys.UP:
-            self._move_selection(-1)
-        elif key == keys.DOWN:
-            self._move_selection(1)
-        elif key == keys.LEFT:
             self._move_diff(-1)
-        elif key == keys.RIGHT:
+        elif key == keys.DOWN:
             self._move_diff(1)
+        elif key == keys.LEFT:
+            self._move_mapset(-1)
+        elif key == keys.RIGHT:
+            self._move_mapset(1)
         elif key == keys.ENTER:
             self._play_selected()
 
@@ -2250,18 +2261,16 @@ class SongSelectScene(Scene):
         set_idx, diff_idx = self._flat_idx_to_selection(new_flat)
         self._apply_selected_indices(set_idx, diff_idx)
 
+    def _move_mapset(self, delta: int) -> None:
+        if not self._sets or delta == 0:
+            return
+        new_set_idx = max(0, min(self._selected_idx + delta, len(self._sets) - 1))
+        if new_set_idx == self._selected_idx:
+            return
+        self._apply_selected_indices(new_set_idx, 0)
+
     def _move_diff(self, delta: int) -> None:
-        if not self._sets:
-            return
-        bset = self._sets[self._selected_idx]
-        n = len(bset.maps)
-        if n <= 1:
-            return
-        new_idx = max(0, min(self._selected_diff_idx + delta, n - 1))
-        if new_idx == self._selected_diff_idx:
-            return
-        self._selected_diff_idx = new_idx
-        self._refresh_selected_map_state(clear_replays=True)
+        self._move_selection(delta)
 
     def _play_selected(self) -> None:
         if self._anim_state == "exiting":
