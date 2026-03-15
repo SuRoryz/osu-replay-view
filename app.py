@@ -180,6 +180,11 @@ class App(mglw.WindowConfig):
         self.social_client.command_context_provider = self._social_command_context
         self.social_client.chat_payload_handler = self._handle_chat_message_payload
         self.social_client.download_event_handler = self._handle_download_event
+        from scenes.song_select import SongSelectScene
+        self._scene = SongSelectScene(self)
+        self._scene.on_enter()
+        self._apply_window_settings()
+        self._sync_framebuffer_state()
 
     def _apply_window_icon(self) -> None:
         if not APP_ICON_PATH.is_file():
@@ -203,12 +208,6 @@ class App(mglw.WindowConfig):
                 setter(image)
             except Exception:
                 pass
-
-        from scenes.song_select import SongSelectScene
-        self._scene = SongSelectScene(self)
-        self._scene.on_enter()
-        self._apply_window_settings()
-        self._sync_framebuffer_state()
 
     def switch_scene(self, scene) -> None:
         self._scene.on_leave()

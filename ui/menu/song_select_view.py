@@ -57,7 +57,7 @@ class SongSelectMenuView:
 
     def _draw_eye_metric(self, theme, rect: Rect, *, value: str, size: int, alpha: float) -> None:
         colors = theme.colors
-        eye_rect = Rect(rect.x, rect.y + 2.0, 12.0, 8.0)
+        eye_rect = Rect(rect.x - 4.0, rect.y + 3.0, 12.0, 8.0)
         self._commands.panel(
             eye_rect,
             radius=eye_rect.h * 0.5,
@@ -76,7 +76,7 @@ class SongSelectMenuView:
         self._commands.text(
             value,
             eye_rect.right + 5.0,
-            rect.y,
+            rect.y - 2.0,
             size,
             color=colors.text_muted,
             alpha=0.82 * alpha,
@@ -96,7 +96,7 @@ class SongSelectMenuView:
         dot_r = 1.6
         color = theme.colors.text_primary if hovered else theme.colors.text_secondary
         for idx in range(3):
-            cy = rect.y + rect.h * 0.28 + idx * rect.h * 0.22
+            cy = rect.y + rect.h * 0.28 + idx * rect.h * 0.22 - 2.0
             self._commands.panel(
                 Rect(dot_x, cy, dot_r * 2.0, dot_r * 2.0),
                 radius=dot_r,
@@ -680,7 +680,7 @@ class SongSelectMenuView:
                 self._commands.text(
                     label,
                     row_draw_rect.x + (18.0 * density if not is_downloaded else 20.0 * density),
-                    row_draw_rect.y + 8.0 * density,
+                    row_draw_rect.y + 10.0 * density,
                     layout.context.tokens.typography.body_s,
                     color=colors.text_primary if is_downloaded else colors.text_secondary,
                     alpha=0.92 + 0.05 * row_anim,
@@ -748,7 +748,7 @@ class SongSelectMenuView:
                 elif full_path in scene._replay_summary_loading:
                     label_text = f"{Path(rp).stem}  Loading..."
                 label = _truncate_text(text, label_text, layout.context.tokens.typography.body_s, row_draw_rect.w - 76.0 * density)
-                self._commands.text(label, row_draw_rect.x + 18.0 * density, row_draw_rect.y + 9.0 * density, layout.context.tokens.typography.body_s, color=colors.text_primary if is_sel else colors.text_secondary, alpha=0.92 + 0.06 * row_anim)
+                self._commands.text(label, row_draw_rect.x + 18.0 * density, row_draw_rect.y + 8.0 * density, layout.context.tokens.typography.body_s, color=colors.text_primary if is_sel else colors.text_secondary, alpha=0.92 + 0.06 * row_anim)
                 dots_rect = Rect(row_draw_rect.right - 28.0 * density, row_draw_rect.y + 7.0 * density, 20.0 * density, 20.0 * density)
                 self._draw_kebab_button(theme, dots_rect, hovered=dots_rect.contains(scene._mouse_x, scene._mouse_y), alpha=0.88)
                 scene._replay_rects.append((row_draw_rect.x, row_draw_rect.y, row_draw_rect.w, row_draw_rect.h, full_path))

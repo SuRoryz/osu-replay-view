@@ -1930,7 +1930,7 @@ class SongSelectScene(Scene):
                     primary_text, secondary_text = self._replay_row_labels(rp, full_path, duplicate_labels)
                     primary = _truncate_text(text, primary_text, CONTROL_TEXT_SIZE, section_w - 28)
                     secondary = _truncate_text(text, secondary_text, 11, section_w - 28)
-                    text.draw(primary, section_x + 14, ry + 7, CONTROL_TEXT_SIZE,
+                    text.draw(primary, section_x + 14, ry + 6, CONTROL_TEXT_SIZE,
                               color=COL_TEXT if is_sel else COL_TEXT_DIM)
                     text.draw(secondary, section_x + 14, ry + 24, 11,
                               color=COL_TEXT_MUTED, alpha=0.82)
