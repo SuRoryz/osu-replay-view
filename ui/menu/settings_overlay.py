@@ -23,6 +23,7 @@ from ui.menu.animation import (
 )
 from ui.menu.commands import RenderCommandBuffer
 from ui.menu.layout import LayoutContext, Rect, build_layout_context, clamp
+from ui.menu.skin_preview import SkinPreviewRenderer
 
 
 _AUDIO_KEYS = (("music", "Music"), ("sfx", "Hitsounds"))
@@ -34,7 +35,7 @@ _FPS_LIMIT_OPTIONS = (
     (180, "180 FPS"),
     (0, "Unlimited"),
 )
-_SECTION_COUNT = 4
+_SECTION_COUNT = 5
 _GRAPHICS_TOGGLES = (
     ("gameplay_background_bloom", "Background bloom"),
     ("gameplay_background_image", "Beatmap background image"),
@@ -94,11 +95,17 @@ class _SettingsLayout:
     gameplay_section_rect: Rect
     gameplay_preview_rect: Rect
     profile_section_rect: Rect
+    skin_section_rect: Rect
+    skin_preview_rect: Rect
     audio_controls: dict[str, dict]
     selects: dict[str, _SelectLayout]
     graphics_toggles: dict[str, dict]
     graphics_sliders: dict[str, dict]
     gameplay_toggles: dict[str, _ToggleTileLayout]
+    skin_toggles: dict[str, dict]
+    skin_sliders: dict[str, dict]
+    skin_colors: dict[str, dict]
+    skin_actions: dict[str, Rect]
     display_helper_rect: Rect
     nickname_label_rect: Rect
     nickname_rect: Rect
@@ -124,6 +131,9 @@ class SettingsOverlay:
         self._menu_key: str | None = None
         self._menu_open = False
         self._menu_highlight_index = -1
+        self._skin_preview = SkinPreviewRenderer(app.ctx)
+        self._color_picker_key: str | None = None
+        self._color_dragging: tuple[str, int] | None = None
 
     @property
     def is_open(self) -> bool:
@@ -154,6 +164,8 @@ class SettingsOverlay:
         self._open_anim.set_target(0.0)
         self._content_anim.set_target(0.0)
         self._close_select()
+        self._color_picker_key = None
+        self._color_dragging = None
         self._nickname_focus = False
         self._slider_dragging = None
 
@@ -267,6 +279,7 @@ class SettingsOverlay:
         self._draw_display_section(base_commands, layout, density, content_progress)
         self._draw_gameplay_section(base_commands, layout, density, content_progress)
         self._draw_profile_section(base_commands, layout, density, content_progress)
+        self._draw_skin_section(base_commands, layout, density, content_progress)
         base_commands.clip_pop()
 
         draw_button(
@@ -335,7 +348,12 @@ class SettingsOverlay:
             panels=self.app.panels,
             window_height=self.app.wnd.buffer_size[1],
         )
-        if self._menu_key is not None and self._dropdown_anim.value > 0.001:
+        self._draw_skin_preview(layout, content_progress)
+        self._draw_color_picker(overlay_commands, layout)
+        if (
+            (self._menu_key is not None and self._dropdown_anim.value > 0.001)
+            or self._color_picker_key is not None
+        ):
             overlay_commands.flush(
                 ctx=ctx,
                 text=self.app.text,
@@ -366,6 +384,10 @@ class SettingsOverlay:
                 if self._menu_highlight_index >= 0:
                     self._choose_dropdown_index(self._menu_key, self._menu_highlight_index)
                 return True
+            return True
+        if self._color_picker_key is not None and key == keys.ESCAPE:
+            self._color_picker_key = None
+            self._color_dragging = None
             return True
         if key == keys.ESCAPE:
             self.close()
@@ -411,6 +433,21 @@ class SettingsOverlay:
                 self._close_select()
                 return True
 
+        color_geo = self._color_picker_geometry(layout)
+        if self._color_picker_key is not None and color_geo is not None:
+            if color_geo["menu_rect"].contains(x, y):
+                for idx, track_rect in enumerate(color_geo["track_rects"]):
+                    row_rect = color_geo["row_rects"][idx]
+                    if row_rect.contains(x, y) or track_rect.contains(x, y):
+                        self._color_dragging = (self._color_picker_key, idx)
+                        self._apply_color_value(self._color_picker_key, idx, x, track_rect, persist=False)
+                        return True
+            elif color_geo["trigger_rect"].contains(x, y):
+                self._color_picker_key = None
+                return True
+            else:
+                self._color_picker_key = None
+
         if not layout.drawer_rect.contains(x, y):
             self.close()
             return True
@@ -425,6 +462,7 @@ class SettingsOverlay:
         self._nickname_focus = nickname_rect.contains(x, y)
         if self._nickname_focus:
             self._close_select()
+            self._color_picker_key = None
 
         for key_name, select in layout.selects.items():
             if self._animated_rect(layout, select.rect, section_index=1).contains(x, y):
@@ -468,7 +506,50 @@ class SettingsOverlay:
                 self._apply_slider_value(key_name, x, track_rect, persist=False)
                 return True
 
+        for key_name, toggle in layout.skin_toggles.items():
+            row_rect = self._animated_rect(layout, toggle["row_rect"], section_index=4)
+            button_rect = self._animated_rect(layout, toggle["button_rect"], section_index=4)
+            if row_rect.contains(x, y) or button_rect.contains(x, y):
+                self.app.set_skin_setting(key_name, not self._skin_toggle_value(key_name))
+                self.invalidate()
+                return True
+
+        for key_name, control in layout.skin_colors.items():
+            row_rect = self._animated_rect(layout, control["row_rect"], section_index=4)
+            if row_rect.contains(x, y):
+                self._color_picker_key = None if self._color_picker_key == key_name else key_name
+                self._close_select()
+                self._nickname_focus = False
+                return True
+
+        for key_name, control in layout.skin_sliders.items():
+            row_rect = self._animated_rect(layout, control["row_rect"], section_index=4)
+            track_rect = self._animated_rect(layout, control["track_rect"], section_index=4)
+            if row_rect.contains(x, y) or track_rect.contains(x, y):
+                self._slider_dragging = key_name
+                self._apply_slider_value(key_name, x, track_rect, persist=False)
+                return True
+
+        for key_name, rect in layout.skin_actions.items():
+            button_rect = self._animated_rect(layout, rect, section_index=4)
+            if button_rect.contains(x, y):
+                if key_name == "skin_slider_head_sync":
+                    self.app.sync_skin_group_from_circle("slider_head")
+                elif key_name == "skin_slider_ball_sync":
+                    self.app.sync_skin_group_from_circle("slider_ball")
+                elif key_name == "skin_circle_bloom_fill_sync":
+                    self.app.sync_skin_bloom_color_from_fill("circle")
+                elif key_name == "skin_slider_head_bloom_fill_sync":
+                    self.app.sync_skin_bloom_color_from_fill("slider_head")
+                elif key_name == "skin_slider_ball_bloom_fill_sync":
+                    self.app.sync_skin_bloom_color_from_fill("slider_ball")
+                else:
+                    return True
+                self.invalidate()
+                return True
+
         self._close_select()
+        self._color_picker_key = None
         return True
 
     def handle_mouse_move(self, x: int, y: int) -> bool:
@@ -479,6 +560,15 @@ class SettingsOverlay:
             self._button_hover = button_rect.contains(x, y) if button_rect is not None else False
             return self._button_hover
         self._sync_hover()
+        if self._color_dragging is not None:
+            layout = self._build_layout()
+            key_name, channel = self._color_dragging
+            color_geo = self._color_picker_geometry(layout)
+            if color_geo is None:
+                self._color_dragging = None
+                return self._open
+            self._apply_color_value(key_name, channel, x, color_geo["track_rects"][channel], persist=False)
+            return True
         if self._slider_dragging is None:
             return self._open
         layout = self._build_layout()
@@ -492,6 +582,10 @@ class SettingsOverlay:
         return True
 
     def handle_mouse_release(self, button: int) -> bool:
+        if button == 1 and self._color_dragging is not None:
+            self.app._save_settings()
+            self._color_dragging = None
+            return True
         if button == 1 and self._slider_dragging is not None:
             self.app._save_settings()
             self._slider_dragging = None
@@ -504,6 +598,9 @@ class SettingsOverlay:
         layout = self._build_layout()
         menu_geo = self._menu_geometry(layout)
         if menu_geo is not None and menu_geo["menu_rect"].contains(self._mouse_x, self._mouse_y):
+            return True
+        color_geo = self._color_picker_geometry(layout)
+        if color_geo is not None and color_geo["menu_rect"].contains(self._mouse_x, self._mouse_y):
             return True
         if not layout.drawer_rect.contains(self._mouse_x, self._mouse_y):
             return True
@@ -984,6 +1081,264 @@ class SettingsOverlay:
                 alpha=0.82 * alpha,
             )
 
+    def _draw_skin_section(
+        self,
+        commands: RenderCommandBuffer,
+        layout: _SettingsLayout,
+        density: float,
+        content_progress: float,
+    ) -> None:
+        theme = layout.context.theme
+        colors = theme.colors
+        alpha, offset_y = self._section_visual(layout, 4, content_progress)
+        section_rect = layout.skin_section_rect.translate(dy=offset_y)
+        self._draw_section_shell(
+            commands,
+            layout,
+            section_rect,
+            title="Skin",
+            subtitle="Temporal skin editor until we release standalone editor.",
+            alpha=alpha,
+        )
+        preview_rect = layout.skin_preview_rect.translate(dy=offset_y)
+        commands.panel(
+            preview_rect,
+            radius=16.0 * density,
+            color=(colors.surface_container_low[0], colors.surface_container_low[1], colors.surface_container_low[2], 0.42 * alpha),
+            border_color=(0.0, 0.0, 0.0, 0.0),
+            border_width=0.0,
+        )
+        draw_supporting_text(
+            commands,
+            theme,
+            "Live shader preview",
+            preview_rect.x + 14.0 * density,
+            preview_rect.y + 12.0 * density,
+            layout.context.tokens.typography.body_s,
+            alpha=alpha * 0.88,
+            tone="secondary",
+        )
+
+        for key_name, toggle in layout.skin_toggles.items():
+            row_rect = toggle["row_rect"].translate(dy=offset_y)
+            button_rect = toggle["button_rect"].translate(dy=offset_y)
+            hover_mix = self._mix(f"skin_toggle:{key_name}")
+            enabled = self._skin_toggle_value(key_name)
+            commands.panel(
+                row_rect,
+                radius=theme.shape.corner_m,
+                color=(colors.surface_container[0], colors.surface_container[1], colors.surface_container[2], (0.52 + hover_mix * 0.10) * alpha),
+                border_color=(0.0, 0.0, 0.0, 0.0),
+                border_width=0.0,
+            )
+            draw_supporting_text(
+                commands,
+                theme,
+                toggle["label"],
+                row_rect.x + 12.0 * density,
+                row_rect.y + 8.0 * density,
+                layout.context.tokens.typography.body_s,
+                alpha=alpha,
+                tone="secondary",
+            )
+            draw_supporting_text(
+                commands,
+                theme,
+                toggle["hint"],
+                row_rect.x + 12.0 * density,
+                row_rect.y + 24.0 * density,
+                layout.context.tokens.typography.body_s,
+                alpha=alpha * 0.72,
+                tone="muted",
+            )
+            draw_button(
+                commands,
+                self.app.text,
+                theme,
+                button_rect,
+                label="Circle" if enabled else "Custom",
+                size=layout.context.tokens.typography.body_s,
+                variant="quiet",
+                state=InteractionState.SELECTED if enabled else (
+                    InteractionState.HOVER if self._hovered_id == f"skin_toggle:{key_name}" else InteractionState.REST
+                ),
+                radius=layout.context.tokens.radius_s,
+                alpha=alpha,
+            )
+
+        for key_name, control in layout.skin_colors.items():
+            row_rect = control["row_rect"].translate(dy=offset_y)
+            swatch_rect = control["swatch_rect"].translate(dy=offset_y)
+            hover_mix = self._mix(f"skin_color:{key_name}")
+            is_open = self._color_picker_key == key_name
+            commands.panel(
+                row_rect,
+                radius=theme.shape.corner_m,
+                color=(colors.surface_container[0], colors.surface_container[1], colors.surface_container[2], (0.52 + hover_mix * 0.10 + (0.08 if is_open else 0.0)) * alpha),
+                border_color=(0.0, 0.0, 0.0, 0.0),
+                border_width=0.0,
+            )
+            draw_supporting_text(
+                commands,
+                theme,
+                control["label"],
+                row_rect.x + 12.0 * density,
+                row_rect.y + 8.0 * density,
+                layout.context.tokens.typography.body_s,
+                alpha=alpha,
+                tone="secondary",
+            )
+            if control["hint"]:
+                draw_supporting_text(
+                    commands,
+                    theme,
+                    control["hint"],
+                    row_rect.x + 12.0 * density,
+                    row_rect.y + 24.0 * density,
+                    layout.context.tokens.typography.body_s,
+                    alpha=alpha * 0.72,
+                    tone="muted",
+                )
+            color = tuple(getattr(self.app.settings, key_name))
+            commands.panel(
+                swatch_rect,
+                radius=swatch_rect.h * 0.36,
+                color=(color[0], color[1], color[2], 1.0 * alpha),
+                border_color=(colors.outline[0], colors.outline[1], colors.outline[2], 0.65 * alpha),
+                border_width=max(1.0, 1.0 * density),
+            )
+
+        for key_name, control in layout.skin_sliders.items():
+            row_rect = control["row_rect"].translate(dy=offset_y)
+            track_rect = control["track_rect"].translate(dy=offset_y)
+            hover_mix = self._mix(f"skin_slider:{key_name}")
+            commands.panel(
+                row_rect,
+                radius=theme.shape.corner_m,
+                color=(colors.surface_container[0], colors.surface_container[1], colors.surface_container[2], (0.52 + hover_mix * 0.10) * alpha),
+                border_color=(0.0, 0.0, 0.0, 0.0),
+                border_width=0.0,
+            )
+            draw_supporting_text(
+                commands,
+                theme,
+                control["label"],
+                row_rect.x + 12.0 * density,
+                row_rect.y + 8.0 * density,
+                layout.context.tokens.typography.body_s,
+                alpha=alpha,
+                tone="secondary",
+            )
+            if control["hint"]:
+                draw_supporting_text(
+                    commands,
+                    theme,
+                    control["hint"],
+                    row_rect.x + 12.0 * density,
+                    row_rect.y + 24.0 * density,
+                    layout.context.tokens.typography.body_s,
+                    alpha=alpha * 0.72,
+                    tone="muted",
+                )
+            value_text = self._skin_slider_display(key_name)
+            value_w, _ = self.app.text.measure(value_text, layout.context.tokens.typography.body_s)
+            commands.text(
+                value_text,
+                row_rect.right - value_w - 12.0 * density,
+                row_rect.y + 8.0 * density,
+                layout.context.tokens.typography.body_s,
+                color=colors.text_primary,
+                alpha=0.88 * alpha,
+            )
+            min_value, max_value = self._skin_slider_bounds(key_name)
+            value = self._skin_slider_value(key_name)
+            progress = 0.0 if max_value <= min_value else clamp((value - min_value) / (max_value - min_value), 0.0, 1.0)
+            draw_slider(
+                commands,
+                theme,
+                track_rect,
+                value=progress,
+                density=density,
+                thumb_scale=1.0 + hover_mix * 0.18 + (0.10 if self._slider_dragging == key_name else 0.0),
+                alpha=alpha,
+            )
+
+        action_labels = {
+            "skin_slider_head_sync": "Sync custom head from Circle",
+            "skin_slider_ball_sync": "Sync slider ball from Circle",
+            "skin_circle_bloom_fill_sync": "Sync circle bloom color from fill",
+            "skin_slider_head_bloom_fill_sync": "Sync head bloom color from fill",
+            "skin_slider_ball_bloom_fill_sync": "Sync ball bloom color from fill",
+        }
+        for key_name, rect in layout.skin_actions.items():
+            draw_button(
+                commands,
+                self.app.text,
+                theme,
+                rect.translate(dy=offset_y),
+                label=action_labels[key_name],
+                size=layout.context.tokens.typography.body_s,
+                variant="quiet",
+                state=InteractionState.HOVER if self._hovered_id == f"skin_action:{key_name}" else InteractionState.REST,
+                radius=layout.context.tokens.radius_s,
+                alpha=alpha,
+            )
+
+    def _draw_skin_preview(self, layout: _SettingsLayout, content_progress: float) -> None:
+        alpha, _ = self._section_visual(layout, 4, content_progress)
+        if alpha <= 0.01:
+            return
+        rect = self._animated_rect(layout, layout.skin_preview_rect, section_index=4)
+        rect = Rect(rect.x + 8.0, rect.y + 28.0, rect.w - 16.0, rect.h - 36.0)
+        self._skin_preview.draw(
+            rect,
+            window_width=self.app.wnd.buffer_size[0],
+            window_height=self.app.wnd.buffer_size[1],
+            clip_rect=layout.scroll_rect,
+        )
+
+    def _draw_color_picker(self, commands: RenderCommandBuffer, layout: _SettingsLayout) -> None:
+        geo = self._color_picker_geometry(layout)
+        if geo is None or self._color_picker_key is None:
+            return
+        theme = layout.context.theme
+        colors = theme.colors
+        density = layout.context.density
+        color = tuple(getattr(self.app.settings, self._color_picker_key))
+        commands.panel(
+            geo["menu_rect"],
+            radius=theme.shape.corner_l,
+            color=(colors.surface_variant_soft[0], colors.surface_variant_soft[1], colors.surface_variant_soft[2], 0.98),
+            border_color=(colors.outline[0], colors.outline[1], colors.outline[2], 0.35),
+            border_width=max(1.0, density),
+        )
+        commands.panel(
+            geo["swatch_rect"],
+            radius=geo["swatch_rect"].h * 0.28,
+            color=(color[0], color[1], color[2], 1.0),
+            border_color=(colors.outline[0], colors.outline[1], colors.outline[2], 0.55),
+            border_width=max(1.0, density),
+        )
+        for idx, channel_name in enumerate(("R", "G", "B")):
+            row_rect = geo["row_rects"][idx]
+            commands.text(
+                channel_name,
+                row_rect.x,
+                row_rect.y,
+                layout.context.tokens.typography.body_s,
+                color=colors.text_primary,
+                alpha=0.92,
+            )
+            draw_slider(
+                commands,
+                theme,
+                geo["track_rects"][idx],
+                value=color[idx],
+                density=density,
+                thumb_scale=1.08 if self._color_dragging == (self._color_picker_key, idx) else 1.0,
+                alpha=0.98,
+            )
+
     def _section_visual(
         self,
         layout: _SettingsLayout,
@@ -1097,11 +1452,25 @@ class SettingsOverlay:
             return f"{int(round(value))}"
         return f"{int(round(value * 100.0))}%"
 
+    def _skin_toggle_value(self, key: str) -> bool:
+        return bool(getattr(self.app.settings, key, False))
+
+    def _skin_slider_value(self, key: str) -> float:
+        return float(getattr(self.app.settings, key, 0.0))
+
+    def _skin_slider_bounds(self, key: str) -> tuple[float, float]:
+        return (0.0, 1.0)
+
+    def _skin_slider_display(self, key: str) -> str:
+        return f"{int(round(self._skin_slider_value(key) * 100.0))}%"
+
     def _slider_control(self, layout: _SettingsLayout, key: str) -> tuple[dict, int] | None:
         if key in layout.audio_controls:
             return layout.audio_controls[key], 0
         if key in layout.graphics_sliders:
             return layout.graphics_sliders[key], 1
+        if key in layout.skin_sliders:
+            return layout.skin_sliders[key], 4
         return None
 
     def _toggle_graphics_setting(self, key: str) -> None:
@@ -1171,10 +1540,58 @@ class SettingsOverlay:
             actual = min_value + (max_value - min_value) * value
             if key == "gameplay_cursor_trail_max_len":
                 actual = int(round(actual))
-            self.app.set_graphics_setting(key, actual, persist=persist)
+                self.app.set_graphics_setting(key, actual, persist=persist)
+            elif key.startswith("skin_"):
+                self.app.set_skin_setting(key, actual, persist=persist)
+            else:
+                self.app.set_graphics_setting(key, actual, persist=persist)
             self.invalidate()
 
+    def _color_picker_geometry(self, layout: _SettingsLayout):
+        if self._color_picker_key is None:
+            return None
+        control = layout.skin_colors.get(self._color_picker_key)
+        if control is None:
+            return None
+        density = layout.context.density
+        viewport = layout.context.viewport
+        trigger_rect = self._animated_rect(layout, control["row_rect"], section_index=4)
+        menu_w = min(240.0 * density, layout.drawer_rect.w - 40.0 * density)
+        menu_h = 144.0 * density
+        x = clamp(trigger_rect.right - menu_w, viewport.x + 12.0 * density, viewport.right - menu_w - 12.0 * density)
+        y = clamp(trigger_rect.bottom + 8.0 * density, viewport.y + 12.0 * density, viewport.bottom - menu_h - 12.0 * density)
+        menu_rect = Rect(x, y, menu_w, menu_h)
+        swatch_rect = Rect(x + 12.0 * density, y + 12.0 * density, menu_w - 24.0 * density, 26.0 * density)
+        row_rects = []
+        track_rects = []
+        row_y = swatch_rect.bottom + 14.0 * density
+        for idx in range(3):
+            row_rect = Rect(x + 14.0 * density, row_y + idx * 30.0 * density, menu_w - 28.0 * density, 24.0 * density)
+            row_rects.append(row_rect)
+            track_rects.append(Rect(row_rect.x + 18.0 * density, row_rect.y + 9.0 * density, row_rect.w - 24.0 * density, 8.0 * density))
+        return {
+            "trigger_rect": trigger_rect,
+            "menu_rect": menu_rect,
+            "swatch_rect": swatch_rect,
+            "row_rects": row_rects,
+            "track_rects": track_rects,
+        }
+
+    def _apply_color_value(
+        self,
+        key: str,
+        channel: int,
+        x: float,
+        track_rect: Rect,
+        *,
+        persist: bool,
+    ) -> None:
+        current = list(getattr(self.app.settings, key))
+        current[channel] = clamp((x - track_rect.x) / max(1.0, track_rect.w), 0.0, 1.0)
+        self.app.set_skin_setting(key, tuple(current), persist=persist)
+
     def _update_hover_mix(self, dt: float) -> None:
+        layout = self._build_layout()
         tracked = [
             "button:close",
             "button:back",
@@ -1188,6 +1605,10 @@ class SettingsOverlay:
         tracked.extend(f"toggle:{key}" for key, _label, _short in _GAMEPLAY_HUD_TOGGLES)
         tracked.extend(f"slider:{key}" for key, _ in _AUDIO_KEYS)
         tracked.extend(f"mute:{key}" for key, _ in _AUDIO_KEYS)
+        tracked.extend(f"skin_toggle:{key}" for key in layout.skin_toggles)
+        tracked.extend(f"skin_slider:{key}" for key in layout.skin_sliders)
+        tracked.extend(f"skin_color:{key}" for key in layout.skin_colors)
+        tracked.extend(f"skin_action:{key}" for key in layout.skin_actions)
         for key in tracked:
             anim = self._hover_mix.setdefault(key, AnimatedFloat(0.0, 0.0, 14.0))
             active = self._hovered_id == key
@@ -1196,6 +1617,10 @@ class SettingsOverlay:
             if key == "field:nickname" and self._nickname_focus:
                 active = True
             if self._slider_dragging is not None and key == f"slider:{self._slider_dragging}":
+                active = True
+            if self._slider_dragging is not None and key == f"graphics_slider:{self._slider_dragging}":
+                active = True
+            if self._slider_dragging is not None and key == f"skin_slider:{self._slider_dragging}":
                 active = True
             anim.set_target(1.0 if active else 0.0)
             anim.update(dt)
@@ -1269,6 +1694,38 @@ class SettingsOverlay:
                 self._mouse_y,
             ):
                 self._hovered_id = f"toggle:{key_name}"
+                return
+
+        for key_name, toggle in layout.skin_toggles.items():
+            if self._animated_rect(layout, toggle["row_rect"], section_index=4).contains(
+                self._mouse_x,
+                self._mouse_y,
+            ):
+                self._hovered_id = f"skin_toggle:{key_name}"
+                return
+
+        for key_name, control in layout.skin_colors.items():
+            if self._animated_rect(layout, control["row_rect"], section_index=4).contains(
+                self._mouse_x,
+                self._mouse_y,
+            ):
+                self._hovered_id = f"skin_color:{key_name}"
+                return
+
+        for key_name, control in layout.skin_sliders.items():
+            if self._animated_rect(layout, control["row_rect"], section_index=4).contains(
+                self._mouse_x,
+                self._mouse_y,
+            ):
+                self._hovered_id = f"skin_slider:{key_name}"
+                return
+
+        for key_name, rect in layout.skin_actions.items():
+            if self._animated_rect(layout, rect, section_index=4).contains(
+                self._mouse_x,
+                self._mouse_y,
+            ):
+                self._hovered_id = f"skin_action:{key_name}"
                 return
 
         for key_name, control in layout.audio_controls.items():
@@ -1538,7 +1995,105 @@ class SettingsOverlay:
         profile_section_rect = Rect(content_x, y, card_w, profile_section_h)
         nickname_label_rect = Rect(content_x + card_pad, profile_section_rect.y + card_pad + title_block_h, card_w, tokens.typography.body_s)
         nickname_rect = Rect(content_x + card_pad, nickname_label_rect.bottom + 6.0 * density, card_w - card_pad * 2.0, field_h)
-        y = profile_section_rect.bottom + max(spacing.xxl, 44.0 * density)
+        y = profile_section_rect.bottom + section_gap
+
+        skin_controls_x = content_x + card_pad
+        skin_controls_w = card_w - card_pad * 2.0
+        skin_preview_h = clamp(card_w * 0.40, 188.0 * density, 248.0 * density)
+        skin_row_h = 46.0 * density
+        skin_slider_h = 64.0 * density
+        skin_gap = 8.0 * density
+        skin_toggles: dict[str, dict] = {}
+        skin_sliders: dict[str, dict] = {}
+        skin_colors: dict[str, dict] = {}
+        skin_actions: dict[str, Rect] = {}
+        skin_use_circle_head = bool(getattr(self.app.settings, "skin_slider_use_circle_head", True))
+
+        flow_y = y + card_pad + title_block_h + skin_preview_h + 18.0 * density
+
+        def add_toggle(key_name: str, label: str, hint: str) -> None:
+            nonlocal flow_y
+            row_rect = Rect(skin_controls_x, flow_y, skin_controls_w, skin_row_h)
+            skin_toggles[key_name] = {
+                "label": label,
+                "hint": hint,
+                "row_rect": row_rect,
+                "button_rect": Rect(row_rect.right - 84.0 * density, row_rect.y + 9.0 * density, 72.0 * density, 28.0 * density),
+            }
+            flow_y = row_rect.bottom + skin_gap
+
+        def add_color(key_name: str, label: str, hint: str = "") -> None:
+            nonlocal flow_y
+            row_rect = Rect(skin_controls_x, flow_y, skin_controls_w, skin_row_h)
+            swatch_rect = Rect(row_rect.right - 56.0 * density, row_rect.y + 9.0 * density, 40.0 * density, 28.0 * density)
+            skin_colors[key_name] = {
+                "label": label,
+                "hint": hint,
+                "row_rect": row_rect,
+                "swatch_rect": swatch_rect,
+            }
+            flow_y = row_rect.bottom + skin_gap
+
+        def add_slider(key_name: str, label: str, hint: str = "") -> None:
+            nonlocal flow_y
+            row_rect = Rect(skin_controls_x, flow_y, skin_controls_w, skin_slider_h)
+            skin_sliders[key_name] = {
+                "label": label,
+                "hint": hint,
+                "row_rect": row_rect,
+                "track_rect": Rect(row_rect.x + 12.0 * density, row_rect.y + 46.0 * density, row_rect.w - 24.0 * density, 8.0 * density),
+            }
+            flow_y = row_rect.bottom + skin_gap
+
+        def add_action(key_name: str) -> None:
+            nonlocal flow_y
+            button_rect = Rect(skin_controls_x, flow_y, skin_controls_w, 34.0 * density)
+            skin_actions[key_name] = button_rect
+            flow_y = button_rect.bottom + skin_gap
+
+        add_color("skin_circle_fill_color", "Circle fill")
+        add_slider("skin_circle_fill_opacity", "Circle fill opacity")
+        add_color("skin_circle_border_color", "Circle border")
+        add_slider("skin_circle_border_width", "Circle border width")
+        add_slider("skin_circle_bloom", "Circle bloom", "0 is flat fill, 1 is full default gradient.")
+        add_color("skin_circle_bloom_color", "Circle bloom color")
+        add_action("skin_circle_bloom_fill_sync")
+        add_toggle("skin_slider_use_circle_head", "Slider head uses circle", "Disable to edit a dedicated custom slider head.")
+
+        if not skin_use_circle_head:
+            add_action("skin_slider_head_sync")
+            add_color("skin_slider_head_fill_color", "Slider head fill")
+            add_slider("skin_slider_head_fill_opacity", "Slider head fill opacity")
+            add_color("skin_slider_head_border_color", "Slider head border")
+            add_slider("skin_slider_head_border_width", "Slider head border width")
+            add_slider("skin_slider_head_bloom", "Slider head bloom")
+            add_color("skin_slider_head_bloom_color", "Slider head bloom color")
+            add_action("skin_slider_head_bloom_fill_sync")
+
+        add_color("skin_slider_path_fill_color", "Slider path fill")
+        add_slider("skin_slider_path_fill_opacity", "Slider path fill opacity")
+        add_color("skin_slider_path_border_color", "Slider path border")
+        add_slider("skin_slider_path_border_width", "Slider path border width")
+        add_action("skin_slider_ball_sync")
+        add_color("skin_slider_ball_fill_color", "Slider ball fill")
+        add_slider("skin_slider_ball_fill_opacity", "Slider ball fill opacity")
+        add_color("skin_slider_ball_border_color", "Slider ball border")
+        add_slider("skin_slider_ball_border_width", "Slider ball border width")
+        add_slider("skin_slider_ball_bloom", "Slider ball bloom")
+        add_color("skin_slider_ball_bloom_color", "Slider ball bloom color")
+        add_action("skin_slider_ball_bloom_fill_sync")
+        add_color("skin_cursor_color", "Cursor color")
+        add_slider("skin_cursor_size", "Cursor size")
+
+        skin_section_h = (flow_y - y) + card_pad - skin_gap
+        skin_section_rect = Rect(content_x, y, card_w, skin_section_h)
+        skin_preview_rect = Rect(
+            skin_controls_x,
+            y + card_pad + title_block_h,
+            skin_controls_w,
+            skin_preview_h,
+        )
+        y = skin_section_rect.bottom + max(spacing.xxl, 44.0 * density)
 
         content_height = y - scroll_rect.y
         max_scroll = max(0.0, content_height - scroll_rect.h)
@@ -1564,11 +2119,17 @@ class SettingsOverlay:
             gameplay_section_rect=gameplay_section_rect,
             gameplay_preview_rect=gameplay_preview_rect,
             profile_section_rect=profile_section_rect,
+            skin_section_rect=skin_section_rect,
+            skin_preview_rect=skin_preview_rect,
             audio_controls=audio_controls,
             selects=selects,
             graphics_toggles=graphics_toggles,
             graphics_sliders=graphics_sliders,
             gameplay_toggles=gameplay_toggles,
+            skin_toggles=skin_toggles,
+            skin_sliders=skin_sliders,
+            skin_colors=skin_colors,
+            skin_actions=skin_actions,
             display_helper_rect=display_helper_rect,
             nickname_label_rect=nickname_label_rect,
             nickname_rect=nickname_rect,

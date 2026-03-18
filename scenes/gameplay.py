@@ -45,10 +45,10 @@ MAX_SLIDER_BALLS = 32
 CURSOR_RADIUS = 4.5
 TRAIL_MAX = 256
 TRAIL_LIFETIME_MS = 500.0
-TRAIL_SUBSAMPLE_TARGET = 192
+TRAIL_SUBSAMPLE_TARGET = 320
 TRAIL_RIBBON_MAX_VERTS = (TRAIL_SUBSAMPLE_TARGET + 2) * 2
 TRAIL_CURVE_MAX = 2048
-TRAIL_RESAMPLE_STEP_PX = 1.2
+TRAIL_RESAMPLE_STEP_PX = 0.75
 TRAIL_MIN_SAMPLE_DT_MS = 3.0
 TRAIL_MIN_SAMPLE_DIST_SQ = 1.0
 TRAIL_MIN_CONTROL_DT_MS = 0.05
@@ -707,15 +707,22 @@ class GameplayScene(Scene):
             self.cursor_prog["projection"].write(proj_bytes)
         if self.trail_prog is not None:
             self.trail_prog["projection"].write(proj_bytes)
-            self.trail_prog["u_color"].value = (1.0, 0.85, 0.2)
+            self.trail_prog["u_color"].value = self._skin_cursor_color()
             if "u_trail_points" in self.trail_prog:
                 self.trail_prog["u_trail_points"].value = 0
             if "u_radius" in self.trail_prog:
-                self.trail_prog["u_radius"].value = TRAIL_STROKE_RADIUS
+                self.trail_prog["u_radius"].value = self._skin_cursor_radius() * 0.92
             if "u_lifetime_ms" in self.trail_prog:
                 self.trail_prog["u_lifetime_ms"].value = TRAIL_LIFETIME_MS
             if "u_tail_taper_fraction" in self.trail_prog:
                 self.trail_prog["u_tail_taper_fraction"].value = TRAIL_TAIL_TAPER_FRACTION
+        self._skin.sync_object_uniforms(
+            circle_prog=self.circle_prog,
+            approach_prog=self.approach_prog,
+            slider_prog=self.slider_prog,
+            spinner_prog=self.spinner_prog,
+            ball_prog=self.ball_prog,
+        )
 
     def set_skin(self, skin: Skin):
         self._skin.cleanup()
@@ -724,6 +731,22 @@ class GameplayScene(Scene):
         self._compile_programs()
         self.projection = self._build_projection()
         self._sync_uniforms()
+        if self._stored_data is not None:
+            self._upload(self._stored_data)
+
+    def on_skin_settings_changed(self) -> None:
+        self._skin.sync_object_uniforms(
+            circle_prog=self.circle_prog,
+            approach_prog=self.approach_prog,
+            slider_prog=self.slider_prog,
+            spinner_prog=self.spinner_prog,
+            ball_prog=self.ball_prog,
+        )
+        if self.trail_prog is not None:
+            if "u_color" in self.trail_prog:
+                self.trail_prog["u_color"].value = self._skin_cursor_color()
+            if "u_radius" in self.trail_prog:
+                self.trail_prog["u_radius"].value = self._skin_cursor_radius() * 0.92
         if self._stored_data is not None:
             self._upload(self._stored_data)
 
@@ -785,8 +808,15 @@ class GameplayScene(Scene):
             self.approach_prog["projection"].write(proj_bytes)
         if self.ball_prog is not None:
             self.ball_prog["projection"].write(proj_bytes)
+        self._skin.sync_object_uniforms(
+            circle_prog=self.circle_prog,
+            approach_prog=self.approach_prog,
+            slider_prog=self.slider_prog,
+            spinner_prog=self.spinner_prog,
+            ball_prog=self.ball_prog,
+        )
 
-        self._ball_color = list(self._skin.combo_colors()[0])
+        self._ball_color = list(self._skin.slider_ball_fill_color())
         self._upload_circles(data)
         self._upload_spinners(data)
         self._upload_sliders(data)
@@ -805,16 +835,26 @@ class GameplayScene(Scene):
             self._circle_render_window = None
             return
 
-        color = self._skin.combo_colors()[0]
+        slider_object_indices = set()
+        if data.slider is not None:
+            slider_object_indices = set(int(idx) for idx in data.slider.object_indices.tolist())
+        color = self._skin.circle_fill_color()
+        slider_head_color = self._skin.circle_fill_color(slider_head=True)
         miss_color = [0.55, 0.15, 0.15]
 
-        buf = np.empty((n, 9), dtype="f4")
+        buf = np.empty((n, 10), dtype="f4")
         buf[:, 0:2] = data.circle_positions
         buf[:, 2] = data.circle_radius
-        buf[:, 3:6] = color
         buf[:, 6] = data.circle_start_times
         buf[:, 7] = data.circle_end_times
         buf[:, 8] = data.circle_z
+        buf[:, 9] = 0.0
+        for idx, obj_idx in enumerate(data.circle_object_indices.tolist()):
+            if int(obj_idx) in slider_object_indices:
+                buf[idx, 3:6] = slider_head_color
+                buf[idx, 9] = 1.0
+            else:
+                buf[idx, 3:6] = color
 
         for obj_idx in self._missed_circle_indices:
             circle_idx = self._obj_to_circle_idx.get(int(obj_idx))
@@ -842,8 +882,8 @@ class GameplayScene(Scene):
             self.circle_prog,
             [
                 (self._circle_quad_vbo, "2f", "in_vert"),
-                (self._circle_instance_gpu_buf, "2f 1f 3f 1f 1f 1f/i",
-                 "in_pos", "in_radius", "in_color", "in_start_time", "in_end_time", "in_z"),
+                (self._circle_instance_gpu_buf, "2f 1f 3f 1f 1f 1f 1f/i",
+                 "in_pos", "in_radius", "in_color", "in_start_time", "in_end_time", "in_z", "in_is_slider_head"),
             ],
             index_buffer=self._circle_index_buf,
         )
@@ -853,8 +893,8 @@ class GameplayScene(Scene):
                 self.approach_prog,
                 [
                     (self._circle_quad_vbo, "2f", "in_vert"),
-                    (self._circle_instance_gpu_buf, "2f 1f 3f 1f 1f 1f/i",
-                     "in_pos", "in_radius", "in_color", "in_start_time", "in_end_time", "in_z"),
+                    (self._circle_instance_gpu_buf, "2f 1f 3f 1f 1f 1f 1f/i",
+                     "in_pos", "in_radius", "in_color", "in_start_time", "in_end_time", "in_z", "in_is_slider_head"),
                 ],
                 index_buffer=self._circle_index_buf,
             )
@@ -921,7 +961,7 @@ class GameplayScene(Scene):
         self.path_tex_width = tex_w
 
         n = sd.n_sliders
-        color = self._skin.combo_colors()[0]
+        color = self._skin.slider_fill_color()
 
         buf = np.empty((n, 13), dtype="f4")
         buf[:, 0:2] = sd.bbox_min
@@ -1146,6 +1186,13 @@ class GameplayScene(Scene):
 
     def _gameplay_trail_max_len(self) -> int:
         return max(8, min(TRAIL_MAX, int(getattr(self.app.settings, "gameplay_cursor_trail_max_len", TRAIL_MAX))))
+
+    def _skin_cursor_color(self) -> tuple[float, float, float]:
+        return tuple(getattr(self.app.settings, "skin_cursor_color", (1.0, 1.0, 1.0)))
+
+    def _skin_cursor_radius(self) -> float:
+        size = self._clamp_unit(getattr(self.app.settings, "skin_cursor_size", 0.5))
+        return CURSOR_RADIUS * (0.6 + size * 1.4)
 
     def _format_timeline_time(self, time_ms: float) -> str:
         total_ms = max(0, int(round(time_ms)))
@@ -1593,7 +1640,7 @@ class GameplayScene(Scene):
             target = min(target, 104)
         target = max(16, min(target, self._gameplay_trail_max_len()))
         by_length = int(path_length_px / TRAIL_RESAMPLE_STEP_PX) + 1
-        by_time = int(max(0.0, duration_ms) / 4.0) + 1
+        by_time = int(max(0.0, duration_ms) / 3.0) + 1
         return min(target, max(16, max(by_length, by_time)))
 
     def _rebuild_state_for_time(self, current_time_ms: float) -> None:
@@ -1819,14 +1866,15 @@ class GameplayScene(Scene):
             while trail and current_time_ms - trail[0][0] > TRAIL_LIFETIME_MS:
                 trail.popleft()
             self._append_trail_point(trail, current_time_ms, cx, cy)
-        color = (1.0, 0.92, 0.3) if participant is None else participant.color
+        color = self._skin_cursor_color()
         alpha = min(1.0, intro_scale) * max(0.0, min(1.0, alpha_scale))
+        cursor_radius = self._skin_cursor_radius()
 
         buf = self._cursor_head_buf
         buf[0] = [
             cx,
             cy,
-            CURSOR_RADIUS * intro_scale,
+            cursor_radius * intro_scale,
             color[0],
             color[1],
             color[2],
@@ -2642,7 +2690,7 @@ class GameplayScene(Scene):
                                     )
                                     self._trail_point_tex.use(location=0)
                                 if self.trail_prog is not None and "u_color" in self.trail_prog:
-                                    self.trail_prog["u_color"].value = participant.color
+                                    self.trail_prog["u_color"].value = self._skin_cursor_color()
                                     if "u_alpha_scale" in self.trail_prog:
                                         self.trail_prog["u_alpha_scale"].value = alpha
                                     if "u_current_time_ms" in self.trail_prog:
@@ -2651,9 +2699,15 @@ class GameplayScene(Scene):
                                         self.trail_prog["u_point_count"].value = n_trail_ctrl
                                     if "u_curve_samples" in self.trail_prog:
                                         self.trail_prog["u_curve_samples"].value = n_trail_samples
-                                self.trail_vao.render(moderngl.TRIANGLE_STRIP, vertices=n_trail_samples * 2)
+                                self.trail_vao.render(
+                                    moderngl.TRIANGLES,
+                                    vertices=max(0, n_trail_samples - 1) * 6,
+                                )
                                 self._skin.end_trail_pass(self.ctx)
 
+                    # Cursor shaders output premultiplied alpha, so keep the
+                    # matching blend mode here even when the trail pass is skipped.
+                    self.ctx.blend_func = (moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
                     self._cursor_instance_buf.write(memoryview(head_buf[:n_head]).cast("B"))
                     self.cursor_vao.render(moderngl.TRIANGLES, instances=n_head)
             self.ctx.enable(moderngl.DEPTH_TEST)

@@ -3,11 +3,123 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+
 import numpy as np
 import moderngl
 
 from profiling import profiler
 from skins.base import Skin
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _coerce_rgb(value, default: tuple[float, float, float]) -> tuple[float, float, float]:
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        try:
+            return tuple(_clamp01(channel) for channel in value)
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
+@dataclass(slots=True)
+class DefaultSkinVisualSettings:
+    circle_fill_color: tuple[float, float, float]
+    circle_fill_opacity: float
+    circle_border_color: tuple[float, float, float]
+    circle_border_width: float
+    circle_bloom: float
+    circle_bloom_color: tuple[float, float, float]
+    slider_use_circle_head: bool
+    slider_head_fill_color: tuple[float, float, float]
+    slider_head_fill_opacity: float
+    slider_head_border_color: tuple[float, float, float]
+    slider_head_border_width: float
+    slider_head_bloom: float
+    slider_head_bloom_color: tuple[float, float, float]
+    slider_path_fill_color: tuple[float, float, float]
+    slider_path_fill_opacity: float
+    slider_path_border_color: tuple[float, float, float]
+    slider_path_border_width: float
+    slider_ball_fill_color: tuple[float, float, float]
+    slider_ball_fill_opacity: float
+    slider_ball_border_color: tuple[float, float, float]
+    slider_ball_border_width: float
+    slider_ball_bloom: float
+    slider_ball_bloom_color: tuple[float, float, float]
+    cursor_color: tuple[float, float, float]
+    cursor_size: float
+
+    def normalized(self) -> "DefaultSkinVisualSettings":
+        return DefaultSkinVisualSettings(
+            circle_fill_color=_coerce_rgb(self.circle_fill_color, DEFAULT_CIRCLE_FILL_COLOR),
+            circle_fill_opacity=_clamp01(self.circle_fill_opacity),
+            circle_border_color=_coerce_rgb(self.circle_border_color, (1.0, 1.0, 1.0)),
+            circle_border_width=_clamp01(self.circle_border_width),
+            circle_bloom=_clamp01(self.circle_bloom),
+            circle_bloom_color=_coerce_rgb(self.circle_bloom_color, DEFAULT_CIRCLE_FILL_COLOR),
+            slider_use_circle_head=bool(self.slider_use_circle_head),
+            slider_head_fill_color=_coerce_rgb(self.slider_head_fill_color, DEFAULT_CIRCLE_FILL_COLOR),
+            slider_head_fill_opacity=_clamp01(self.slider_head_fill_opacity),
+            slider_head_border_color=_coerce_rgb(self.slider_head_border_color, (1.0, 1.0, 1.0)),
+            slider_head_border_width=_clamp01(self.slider_head_border_width),
+            slider_head_bloom=_clamp01(self.slider_head_bloom),
+            slider_head_bloom_color=_coerce_rgb(self.slider_head_bloom_color, DEFAULT_CIRCLE_FILL_COLOR),
+            slider_path_fill_color=_coerce_rgb(self.slider_path_fill_color, DEFAULT_SLIDER_FILL_COLOR),
+            slider_path_fill_opacity=_clamp01(self.slider_path_fill_opacity),
+            slider_path_border_color=_coerce_rgb(self.slider_path_border_color, DEFAULT_SLIDER_BORDER_COLOR),
+            slider_path_border_width=_clamp01(self.slider_path_border_width),
+            slider_ball_fill_color=_coerce_rgb(self.slider_ball_fill_color, DEFAULT_CIRCLE_FILL_COLOR),
+            slider_ball_fill_opacity=_clamp01(self.slider_ball_fill_opacity),
+            slider_ball_border_color=_coerce_rgb(self.slider_ball_border_color, (1.0, 1.0, 1.0)),
+            slider_ball_border_width=_clamp01(self.slider_ball_border_width),
+            slider_ball_bloom=_clamp01(self.slider_ball_bloom),
+            slider_ball_bloom_color=_coerce_rgb(self.slider_ball_bloom_color, DEFAULT_CIRCLE_FILL_COLOR),
+            cursor_color=_coerce_rgb(self.cursor_color, DEFAULT_CURSOR_COLOR),
+            cursor_size=_clamp01(self.cursor_size),
+        )
+
+
+DEFAULT_CIRCLE_FILL_COLOR = (0.55, 0.75, 1.0)
+DEFAULT_CIRCLE_BORDER_COLOR = (1.0, 1.0, 1.0)
+DEFAULT_SLIDER_FILL_COLOR = (0.12, 0.1525, 0.22)
+DEFAULT_SLIDER_BORDER_COLOR = (0.6175, 0.6875, 0.775)
+DEFAULT_CURSOR_COLOR = (1.0, 1.0, 1.0)
+DEFAULT_CIRCLE_BORDER_WIDTH = 0.08
+DEFAULT_SLIDER_PATH_BORDER_WIDTH = 0.46
+
+
+def make_default_skin_visual_settings() -> DefaultSkinVisualSettings:
+    return DefaultSkinVisualSettings(
+        circle_fill_color=DEFAULT_CIRCLE_FILL_COLOR,
+        circle_fill_opacity=1.0,
+        circle_border_color=DEFAULT_CIRCLE_BORDER_COLOR,
+        circle_border_width=DEFAULT_CIRCLE_BORDER_WIDTH,
+        circle_bloom=1.0,
+        circle_bloom_color=DEFAULT_CIRCLE_FILL_COLOR,
+        slider_use_circle_head=True,
+        slider_head_fill_color=DEFAULT_CIRCLE_FILL_COLOR,
+        slider_head_fill_opacity=1.0,
+        slider_head_border_color=DEFAULT_CIRCLE_BORDER_COLOR,
+        slider_head_border_width=DEFAULT_CIRCLE_BORDER_WIDTH,
+        slider_head_bloom=1.0,
+        slider_head_bloom_color=DEFAULT_CIRCLE_FILL_COLOR,
+        slider_path_fill_color=DEFAULT_SLIDER_FILL_COLOR,
+        slider_path_fill_opacity=0.65,
+        slider_path_border_color=DEFAULT_SLIDER_BORDER_COLOR,
+        slider_path_border_width=DEFAULT_SLIDER_PATH_BORDER_WIDTH,
+        slider_ball_fill_color=DEFAULT_CIRCLE_FILL_COLOR,
+        slider_ball_fill_opacity=1.0,
+        slider_ball_border_color=DEFAULT_CIRCLE_BORDER_COLOR,
+        slider_ball_border_width=DEFAULT_CIRCLE_BORDER_WIDTH,
+        slider_ball_bloom=1.0,
+        slider_ball_bloom_color=DEFAULT_CIRCLE_FILL_COLOR,
+        cursor_color=DEFAULT_CURSOR_COLOR,
+        cursor_size=0.5,
+    )
 
 # ---------------------------------------------------------------------------
 # Circle shaders (body only -- approach ring is a separate pass)
@@ -20,6 +132,7 @@ in vec2  in_vert;
 in vec2  in_pos;
 in float in_radius;
 in vec3  in_color;
+in float in_is_slider_head;
 in float in_start_time;
 in float in_end_time;
 in float in_z;
@@ -33,6 +146,7 @@ uniform int   u_hidden;
 out vec2  v_uv;
 out vec3  v_color;
 out float v_alpha;
+flat out float v_is_slider_head;
 
 void main() {
     float appear_time = in_start_time - preempt;
@@ -59,6 +173,7 @@ void main() {
 
     v_uv    = in_vert;
     v_color = in_color;
+    v_is_slider_head = in_is_slider_head;
 }
 """
 
@@ -68,6 +183,18 @@ _CIRCLE_FRAG = """
 in vec2  v_uv;
 in vec3  v_color;
 in float v_alpha;
+flat in float v_is_slider_head;
+
+uniform vec3  u_circle_border_color;
+uniform float u_circle_fill_opacity;
+uniform float u_circle_border_width;
+uniform float u_circle_bloom;
+uniform vec3  u_circle_bloom_color;
+uniform vec3  u_slider_head_border_color;
+uniform float u_slider_head_fill_opacity;
+uniform float u_slider_head_border_width;
+uniform float u_slider_head_bloom;
+uniform vec3  u_slider_head_bloom_color;
 
 out vec4 frag_color;
 
@@ -79,12 +206,23 @@ void main() {
 
     // Subtle gradient: small enough that overlap artifacts are negligible
     float grad = smoothstep(0.0, 0.95, dist);
-    vec3 body = mix(v_color * 1.08, v_color * 0.88, grad);
+    float bloom = mix(u_circle_bloom, u_slider_head_bloom, v_is_slider_head);
+    vec3 border_color = mix(u_circle_border_color, u_slider_head_border_color, v_is_slider_head);
+    float fill_opacity = mix(u_circle_fill_opacity, u_slider_head_fill_opacity, v_is_slider_head);
+    float border_width = mix(u_circle_border_width, u_slider_head_border_width, v_is_slider_head);
+    vec3 bloom_color = mix(u_circle_bloom_color, u_slider_head_bloom_color, v_is_slider_head);
+    vec3 bloom_top = max(v_color * 1.08, bloom_color);
+    vec3 body = mix(v_color, mix(bloom_top, v_color * 0.88, grad), bloom);
 
-    float ring = smoothstep(0.88, 0.91, dist) * (1.0 - smoothstep(0.94, 0.96, dist));
-    vec3 col = mix(body, vec3(1.0), ring * 0.85);
-
-    frag_color = vec4(col * alpha, alpha);
+    float border_outer = 0.96;
+    float border_enabled = smoothstep(0.001, 0.03, border_width);
+    float border_inner = max(0.05, border_outer - (0.02 + border_width * 0.16));
+    float ring = smoothstep(border_inner - 0.01, border_inner + 0.01, dist)
+        * (1.0 - smoothstep(border_outer - 0.01, border_outer + 0.01, dist));
+    ring *= border_enabled;
+    vec3 col = mix(body, border_color, ring);
+    float out_alpha = mix(alpha * fill_opacity, alpha, ring);
+    frag_color = vec4(col * out_alpha, out_alpha);
 }
 """
 
@@ -99,6 +237,7 @@ in vec2  in_vert;
 in vec2  in_pos;
 in float in_radius;
 in vec3  in_color;
+in float in_is_slider_head;
 in float in_start_time;
 in float in_end_time;
 in float in_z;
@@ -114,6 +253,7 @@ out vec2  v_local;
 out float v_alpha;
 out float v_approach_r;
 out vec3  v_color;
+flat out float v_is_slider_head;
 
 void main() {
     if (u_hidden == 1) {
@@ -145,6 +285,7 @@ void main() {
     v_alpha      = alpha_in * end_fade;
     v_approach_r = current_r;
     v_color      = in_color;
+    v_is_slider_head = in_is_slider_head;
 }
 """
 
@@ -155,6 +296,16 @@ in vec2  v_local;
 in float v_alpha;
 in float v_approach_r;
 in vec3  v_color;
+flat in float v_is_slider_head;
+
+uniform vec3  u_circle_border_color;
+uniform float u_circle_border_width;
+uniform float u_circle_bloom;
+uniform vec3  u_circle_bloom_color;
+uniform vec3  u_slider_head_border_color;
+uniform float u_slider_head_border_width;
+uniform float u_slider_head_bloom;
+uniform vec3  u_slider_head_bloom_color;
 
 out vec4 frag_color;
 
@@ -168,7 +319,10 @@ void main() {
     float alpha = ring * v_alpha;
     if (alpha < 0.005) discard;
 
-    vec3 col = mix(v_color, vec3(1.0), 0.35);
+    float bloom = mix(u_circle_bloom, u_slider_head_bloom, v_is_slider_head);
+    vec3 bloom_color = mix(u_circle_bloom_color, u_slider_head_bloom_color, v_is_slider_head);
+    float edge_tint = clamp(0.22 + 0.32 * bloom, 0.0, 1.0);
+    vec3 col = mix(v_color, bloom_color, edge_tint);
     frag_color = vec4(col * alpha, alpha);
 }
 """
@@ -353,6 +507,10 @@ flat in float v_radius;
 
 uniform sampler2D u_path_tex;
 uniform int       u_path_tex_width;
+uniform vec3      u_slider_fill_color;
+uniform float     u_slider_fill_opacity;
+uniform vec3      u_slider_border_color;
+uniform float     u_slider_border_width;
 
 out vec4 frag_color;
 
@@ -375,14 +533,11 @@ float dist2_to_segment(vec2 p, vec2 a, vec2 b) {
 void main() {
     if (v_alpha < 0.001) discard;
 
-    float edge_start = v_radius - 4.0;
-    float edge_start2 = edge_start * edge_start;
     float sdf2 = 1e18;
     vec2 a = fetch_point(v_path_start);
     for (int i = 1; i < v_path_count; i++) {
         vec2 b = fetch_point(v_path_start + i);
         sdf2 = min(sdf2, dist2_to_segment(v_world, a, b));
-        if (sdf2 < edge_start2) break;
         a = b;
     }
     float sdf = sqrt(max(sdf2, 0.0));
@@ -390,18 +545,20 @@ void main() {
     float mask = 1.0 - smoothstep(v_radius - 1.0, v_radius + 0.5, sdf);
     if (mask < 0.001) discard;
 
-    // Border ring
-    float border_in  = smoothstep(v_radius - 3.5, v_radius - 2.0, sdf);
+    float border_enabled = smoothstep(0.001, 0.03, u_slider_border_width);
+    float border_span = mix(1.2, 6.4, u_slider_border_width);
+    float border_in  = smoothstep(v_radius - (border_span + 1.5), v_radius - border_span, sdf);
     float border_out = 1.0 - smoothstep(v_radius - 0.8, v_radius + 0.5, sdf);
-    float border = border_in * border_out;
+    float border = border_in * border_out * border_enabled;
 
-    // Dark body with colored rim near border
     float rim = smoothstep(v_radius * 0.5, v_radius - 5.0, sdf);
-    vec3  body_col = vec3(0.04, 0.04, 0.07) + v_color * rim * 0.15;
-    vec3  border_col = mix(v_color * 0.7, vec3(0.85), 0.5);
+    vec3  fill_col = mix(v_color, u_slider_fill_color, 0.82);
+    vec3  border_tint = mix(v_color, u_slider_border_color, 0.82);
+    vec3  body_col = mix(fill_col, fill_col * 0.78, rim * 0.55);
+    vec3  border_col = border_tint;
     vec3  col = mix(body_col, border_col, border);
 
-    float body_a = 0.65;
+    float body_a = u_slider_fill_opacity;
     float alpha = mix(body_a, 1.0, border) * mask * v_alpha;
 
     frag_color = vec4(col * alpha, alpha);
@@ -441,6 +598,12 @@ _BALL_FRAG = """
 in vec2  v_uv;
 in vec3  v_color;
 
+uniform vec3  u_slider_ball_border_color;
+uniform float u_slider_ball_fill_opacity;
+uniform float u_slider_ball_border_width;
+uniform float u_slider_ball_bloom;
+uniform vec3  u_slider_ball_bloom_color;
+
 out vec4 frag_color;
 
 void main() {
@@ -449,12 +612,18 @@ void main() {
     if (edge < 0.001) discard;
 
     float grad = smoothstep(0.0, 0.88, dist);
-    vec3 body = mix(v_color * 1.3, v_color * 0.75, grad);
+    vec3 bloom_top = max(v_color * 1.3, u_slider_ball_bloom_color);
+    vec3 body = mix(v_color, mix(bloom_top, v_color * 0.75, grad), u_slider_ball_bloom);
 
-    float ring = smoothstep(0.82, 0.86, dist) * (1.0 - smoothstep(0.90, 0.93, dist));
-    vec3 col = mix(body, vec3(1.0), ring * 0.85);
-
-    frag_color = vec4(col * edge, edge);
+    float border_outer = 0.93;
+    float border_enabled = smoothstep(0.001, 0.03, u_slider_ball_border_width);
+    float border_inner = max(0.05, border_outer - (0.02 + u_slider_ball_border_width * 0.16));
+    float ring = smoothstep(border_inner - 0.01, border_inner + 0.01, dist)
+        * (1.0 - smoothstep(border_outer - 0.01, border_outer + 0.01, dist));
+    ring *= border_enabled;
+    vec3 col = mix(body, u_slider_ball_border_color, ring);
+    float out_alpha = mix(edge * u_slider_ball_fill_opacity, edge, ring);
+    frag_color = vec4(col * out_alpha, out_alpha);
 }
 """
 
@@ -518,8 +687,13 @@ uniform float u_tail_taper_fraction;
 uniform float u_alpha_scale;
 uniform float u_current_time_ms;
 
-out float v_across;
-out float v_alpha;
+out vec2 v_world;
+flat out vec2 v_seg_a;
+flat out vec2 v_seg_b;
+flat out float v_alpha_a;
+flat out float v_alpha_b;
+flat out float v_radius_a;
+flat out float v_radius_b;
 
 vec4 fetch_point(int idx) {
     idx = clamp(idx, 0, max(u_point_count - 1, 0));
@@ -530,6 +704,11 @@ vec2 safe_dir(vec2 a, vec2 b, vec2 fallback_dir) {
     vec2 d = b - a;
     float len = length(d);
     return len > 0.0001 ? (d / len) : fallback_dir;
+}
+
+vec2 safe_normalize(vec2 value, vec2 fallback_value) {
+    float len = length(value);
+    return len > 0.0001 ? (value / len) : fallback_value;
 }
 
 float safe_span(float a, float b) {
@@ -585,61 +764,106 @@ vec2 curve_pos(vec2 p0, vec2 p1, vec2 p2, vec2 p3, float t) {
     return centripetal_catmull_rom(p0, p1, p2, p3, t);
 }
 
-vec2 curve_tangent(vec2 p0, vec2 p1, vec2 p2, vec2 p3, float t) {
-    float eps = 1.0 / 256.0;
-    float t0 = clamp(t - eps, 0.0, 1.0);
-    float t1 = clamp(t + eps, 0.0, 1.0);
-    vec2 a = curve_pos(p0, p1, p2, p3, t0);
-    vec2 b = curve_pos(p0, p1, p2, p3, t1);
+vec2 curve_sample(float global_t) {
+    float clamped_t = clamp(global_t, 0.0, float(max(u_point_count - 1, 1)));
+    int seg_idx = min(int(floor(clamped_t)), max(u_point_count - 2, 0));
+    float local_t = min(clamped_t - float(seg_idx), 1.0);
+
+    vec2 p0 = fetch_point(seg_idx - 1).xy;
+    vec2 p1 = fetch_point(seg_idx + 0).xy;
+    vec2 p2 = fetch_point(seg_idx + 1).xy;
+    vec2 p3 = fetch_point(seg_idx + 2).xy;
+    return curve_pos(p0, p1, p2, p3, local_t);
+}
+
+vec2 curve_tangent(float global_t) {
+    float span = float(max(u_point_count - 1, 1));
+    float eps = max(0.02, min(0.35, span / float(max(u_curve_samples, 2))));
+    vec2 a = curve_sample(global_t - eps);
+    vec2 b = curve_sample(global_t + eps);
     return b - a;
 }
 
 void main() {
-    int sample_idx = gl_VertexID / 2;
-    float side = (gl_VertexID & 1) == 0 ? -1.0 : 1.0;
     int sample_count = max(u_curve_samples, 2);
-    float sample_t = float(sample_idx) / float(max(sample_count - 1, 1));
-    float global_t = sample_t * float(max(u_point_count - 1, 1));
-    int seg_idx = min(int(floor(global_t)), max(u_point_count - 2, 0));
-    float local_t = min(global_t - float(seg_idx), 1.0);
+    int segment_count = max(sample_count - 1, 1);
+    int vertex_in_segment = gl_VertexID % 6;
+    int segment_idx = min(gl_VertexID / 6, segment_count - 1);
 
-    vec4 q0 = fetch_point(seg_idx - 1);
-    vec4 q1 = fetch_point(seg_idx + 0);
-    vec4 q2 = fetch_point(seg_idx + 1);
-    vec4 q3 = fetch_point(seg_idx + 2);
+    float t0 = float(segment_idx) / float(segment_count);
+    float t1 = float(segment_idx + 1) / float(segment_count);
+    float g0 = t0 * float(max(u_point_count - 1, 1));
+    float g1 = t1 * float(max(u_point_count - 1, 1));
+    vec2 pos0 = curve_sample(g0);
+    vec2 pos1 = curve_sample(g1);
 
-    vec2 p0 = q0.xy;
-    vec2 p1 = q1.xy;
-    vec2 p2 = q2.xy;
-    vec2 p3 = q3.xy;
-    vec2 pos = curve_pos(p0, p1, p2, p3, local_t);
-    vec2 tangent = curve_tangent(p0, p1, p2, p3, local_t);
-    vec2 fallback = safe_dir(p1, p2, vec2(1.0, 0.0));
-    vec2 dir = safe_dir(vec2(0.0), tangent, fallback);
+    float time0 = mix(fetch_point(0).z, fetch_point(u_point_count - 1).z, t0);
+    float time1 = mix(fetch_point(0).z, fetch_point(u_point_count - 1).z, t1);
+    float age0 = max(0.0, u_current_time_ms - time0);
+    float age1 = max(0.0, u_current_time_ms - time1);
+    float radius0 = trail_width(age0, t0);
+    float radius1 = trail_width(age1, t1);
+    float alpha0 = trail_alpha(age0);
+    float alpha1 = trail_alpha(age1);
+
+    vec2 fallback = safe_dir(pos0, pos1, vec2(1.0, 0.0));
+    vec2 dir = safe_normalize(pos1 - pos0, fallback);
     vec2 normal = vec2(-dir.y, dir.x);
+    float max_radius = max(radius0, radius1) + 1.5;
+    vec2 start_cap = pos0 - dir * max_radius;
+    vec2 end_cap = pos1 + dir * max_radius;
 
-    float point_time_ms = mix(q1.z, q2.z, local_t);
-    float age_ms = max(0.0, u_current_time_ms - point_time_ms);
-    float width = trail_width(age_ms, sample_t);
-    vec2 world_pos = pos + normal * (width * side);
+    bool use_end = (vertex_in_segment == 2 || vertex_in_segment == 3 || vertex_in_segment == 5);
+    bool is_right = (vertex_in_segment == 1 || vertex_in_segment == 4 || vertex_in_segment == 5);
+    vec2 edge_pos = use_end ? end_cap : start_cap;
+    float side = is_right ? 1.0 : -1.0;
+    vec2 world_pos = edge_pos + normal * (max_radius * side);
+
     gl_Position = projection * vec4(world_pos, -0.9, 1.0);
-    v_across = side;
-    v_alpha = trail_alpha(age_ms);
+    v_world = world_pos;
+    v_seg_a = pos0;
+    v_seg_b = pos1;
+    v_alpha_a = alpha0;
+    v_alpha_b = alpha1;
+    v_radius_a = radius0;
+    v_radius_b = radius1;
 }
 """
 
 _TRAIL_FRAG = """
 #version 330 core
-in float v_across;
-in float v_alpha;
+in vec2 v_world;
+flat in vec2 v_seg_a;
+flat in vec2 v_seg_b;
+flat in float v_alpha_a;
+flat in float v_alpha_b;
+flat in float v_radius_a;
+flat in float v_radius_b;
 
 uniform vec3 u_color;
 
 out vec4 frag_color;
 
+float dist2_to_segment(vec2 p, vec2 a, vec2 b, out float t) {
+    vec2 ab = b - a;
+    float ab2 = dot(ab, ab);
+    if (ab2 < 1e-10) {
+        t = 0.0;
+        vec2 ap = p - a;
+        return dot(ap, ap);
+    }
+    t = clamp(dot(p - a, ab) / ab2, 0.0, 1.0);
+    vec2 delta = p - (a + ab * t);
+    return dot(delta, delta);
+}
+
 void main() {
-    float edge = 1.0 - smoothstep(0.80, 1.0, abs(v_across));
-    float a = edge * v_alpha;
+    float along_t = 0.0;
+    float dist = sqrt(max(dist2_to_segment(v_world, v_seg_a, v_seg_b, along_t), 0.0));
+    float radius = mix(v_radius_a, v_radius_b, along_t);
+    float alpha_base = mix(v_alpha_a, v_alpha_b, along_t);
+    float edge = 1.0 - smoothstep(max(0.0, radius - 1.0), radius + 0.5, dist);
+    float a = edge * alpha_base;
     if (a < 0.001) discard;
     frag_color = vec4(u_color * a, a);
 }
@@ -770,6 +994,7 @@ class DefaultSkin(Skin):
     name = "default"
 
     def __init__(self):
+        self._visual_settings = make_default_skin_visual_settings()
         self._ctx = None
         self._bloom_w = 0
         self._bloom_h = 0
@@ -822,11 +1047,109 @@ class DefaultSkin(Skin):
 
     def combo_colors(self) -> list[tuple[float, float, float]]:
         return [
-            (0.55, 0.75, 1.0),
+            self.circle_fill_color(),
             (1.0, 0.55, 0.55),
             (0.55, 1.0, 0.7),
             (0.95, 0.75, 0.5),
         ]
+
+    def circle_fill_color(self, *, slider_head: bool = False) -> tuple[float, float, float]:
+        if slider_head and not self._visual_settings.slider_use_circle_head:
+            return self._visual_settings.slider_head_fill_color
+        return self._visual_settings.circle_fill_color
+
+    def slider_fill_color(self) -> tuple[float, float, float]:
+        return self._visual_settings.slider_path_fill_color
+
+    def slider_ball_fill_color(self) -> tuple[float, float, float]:
+        return self._visual_settings.slider_ball_fill_color
+
+    def visual_settings(self) -> DefaultSkinVisualSettings:
+        return self._visual_settings
+
+    def set_visual_settings(self, settings) -> None:
+        if isinstance(settings, DefaultSkinVisualSettings):
+            self._visual_settings = settings.normalized()
+        else:
+            self._visual_settings = make_default_skin_visual_settings()
+
+    def sync_object_uniforms(
+        self,
+        *,
+        circle_prog=None,
+        approach_prog=None,
+        slider_prog=None,
+        spinner_prog=None,
+        ball_prog=None,
+    ) -> None:
+        vs = self._visual_settings
+        head_border_color = (
+            vs.circle_border_color
+            if vs.slider_use_circle_head
+            else vs.slider_head_border_color
+        )
+        head_fill_opacity = (
+            vs.circle_fill_opacity
+            if vs.slider_use_circle_head
+            else vs.slider_head_fill_opacity
+        )
+        head_border_width = (
+            vs.circle_border_width
+            if vs.slider_use_circle_head
+            else vs.slider_head_border_width
+        )
+        head_bloom = vs.circle_bloom if vs.slider_use_circle_head else vs.slider_head_bloom
+        head_bloom_color = (
+            vs.circle_bloom_color
+            if vs.slider_use_circle_head
+            else vs.slider_head_bloom_color
+        )
+
+        for prog in (circle_prog, approach_prog):
+            if prog is None:
+                continue
+            if "u_circle_border_color" in prog:
+                prog["u_circle_border_color"].value = vs.circle_border_color
+            if "u_circle_fill_opacity" in prog:
+                prog["u_circle_fill_opacity"].value = vs.circle_fill_opacity
+            if "u_circle_border_width" in prog:
+                prog["u_circle_border_width"].value = vs.circle_border_width
+            if "u_circle_bloom" in prog:
+                prog["u_circle_bloom"].value = vs.circle_bloom
+            if "u_circle_bloom_color" in prog:
+                prog["u_circle_bloom_color"].value = vs.circle_bloom_color
+            if "u_slider_head_border_color" in prog:
+                prog["u_slider_head_border_color"].value = head_border_color
+            if "u_slider_head_fill_opacity" in prog:
+                prog["u_slider_head_fill_opacity"].value = head_fill_opacity
+            if "u_slider_head_border_width" in prog:
+                prog["u_slider_head_border_width"].value = head_border_width
+            if "u_slider_head_bloom" in prog:
+                prog["u_slider_head_bloom"].value = head_bloom
+            if "u_slider_head_bloom_color" in prog:
+                prog["u_slider_head_bloom_color"].value = head_bloom_color
+
+        if slider_prog is not None:
+            if "u_slider_fill_color" in slider_prog:
+                slider_prog["u_slider_fill_color"].value = vs.slider_path_fill_color
+            if "u_slider_fill_opacity" in slider_prog:
+                slider_prog["u_slider_fill_opacity"].value = vs.slider_path_fill_opacity
+            if "u_slider_border_color" in slider_prog:
+                slider_prog["u_slider_border_color"].value = vs.slider_path_border_color
+            if "u_slider_border_width" in slider_prog:
+                slider_prog["u_slider_border_width"].value = vs.slider_path_border_width
+
+        if ball_prog is not None:
+            if "u_slider_ball_border_color" in ball_prog:
+                ball_prog["u_slider_ball_border_color"].value = vs.slider_ball_border_color
+            if "u_slider_ball_fill_opacity" in ball_prog:
+                ball_prog["u_slider_ball_fill_opacity"].value = vs.slider_ball_fill_opacity
+            if "u_slider_ball_border_width" in ball_prog:
+                ball_prog["u_slider_ball_border_width"].value = vs.slider_ball_border_width
+            if "u_slider_ball_bloom" in ball_prog:
+                ball_prog["u_slider_ball_bloom"].value = vs.slider_ball_bloom
+            if "u_slider_ball_bloom_color" in ball_prog:
+                ball_prog["u_slider_ball_bloom_color"].value = vs.slider_ball_bloom_color
 
     # ----------------------------------------------------------------- bloom
 

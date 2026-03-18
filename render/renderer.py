@@ -140,6 +140,30 @@ class OsuRenderer(mglw.WindowConfig):
             self.ball_prog["projection"].write(proj_bytes)
         if self.cursor_prog is not None:
             self.cursor_prog["projection"].write(proj_bytes)
+        self._skin.sync_object_uniforms(
+            circle_prog=self.circle_prog,
+            approach_prog=self.approach_prog,
+            slider_prog=self.slider_prog,
+            ball_prog=self.ball_prog,
+        )
+
+    def _skin_cursor_color(self) -> tuple[float, float, float]:
+        settings = getattr(self, "settings", None)
+        if settings is not None:
+            return tuple(getattr(settings, "skin_cursor_color", (1.0, 1.0, 1.0)))
+        visual_settings = getattr(self._skin, "visual_settings", None)
+        if callable(visual_settings):
+            return tuple(visual_settings().cursor_color)
+        return (1.0, 1.0, 1.0)
+
+    def _skin_cursor_radius(self) -> float:
+        settings = getattr(self, "settings", None)
+        if settings is not None:
+            size = max(0.0, min(1.0, float(getattr(settings, "skin_cursor_size", 0.5))))
+        else:
+            visual_settings = getattr(self._skin, "visual_settings", None)
+            size = visual_settings().cursor_size if callable(visual_settings) else 0.5
+        return CURSOR_RADIUS * (0.6 + size * 1.4)
 
     def set_skin(self, skin: Skin):
         self._skin.cleanup()
@@ -148,6 +172,16 @@ class OsuRenderer(mglw.WindowConfig):
         self._compile_programs()
         self.projection = self._build_projection()
         self._sync_uniforms()
+        if self._stored_data is not None:
+            self._upload(self._stored_data)
+
+    def on_skin_settings_changed(self) -> None:
+        self._skin.sync_object_uniforms(
+            circle_prog=self.circle_prog,
+            approach_prog=self.approach_prog,
+            slider_prog=self.slider_prog,
+            ball_prog=self.ball_prog,
+        )
         if self._stored_data is not None:
             self._upload(self._stored_data)
 
@@ -202,6 +236,12 @@ class OsuRenderer(mglw.WindowConfig):
             self.approach_prog["projection"].write(proj_bytes)
         if self.ball_prog is not None:
             self.ball_prog["projection"].write(proj_bytes)
+        self._skin.sync_object_uniforms(
+            circle_prog=self.circle_prog,
+            approach_prog=self.approach_prog,
+            slider_prog=self.slider_prog,
+            ball_prog=self.ball_prog,
+        )
 
         self._upload_circles(data)
         self._upload_sliders(data)
@@ -214,15 +254,25 @@ class OsuRenderer(mglw.WindowConfig):
         if n == 0:
             return
 
-        color = self._skin.combo_colors()[0]
+        slider_object_indices = set()
+        if data.slider is not None:
+            slider_object_indices = set(int(idx) for idx in data.slider.object_indices.tolist())
+        circle_color = self._skin.circle_fill_color()
+        slider_head_color = self._skin.circle_fill_color(slider_head=True)
 
-        buf = np.empty((n, 9), dtype="f4")
+        buf = np.empty((n, 10), dtype="f4")
         buf[:, 0:2] = data.circle_positions
         buf[:, 2] = data.circle_radius
-        buf[:, 3:6] = color
         buf[:, 6] = data.circle_start_times
         buf[:, 7] = data.circle_end_times
         buf[:, 8] = data.circle_z
+        buf[:, 9] = 0.0
+        for idx, obj_idx in enumerate(data.circle_object_indices.tolist()):
+            if int(obj_idx) in slider_object_indices:
+                buf[idx, 3:6] = slider_head_color
+                buf[idx, 9] = 1.0
+            else:
+                buf[idx, 3:6] = circle_color
 
         quad_vbo = self.ctx.buffer(_QUAD_VERTS.tobytes())
         index_buf = self.ctx.buffer(_QUAD_INDICES.tobytes())
@@ -232,8 +282,8 @@ class OsuRenderer(mglw.WindowConfig):
             self.circle_prog,
             [
                 (quad_vbo, "2f", "in_vert"),
-                (instance_vbo, "2f 1f 3f 1f 1f 1f/i",
-                 "in_pos", "in_radius", "in_color", "in_start_time", "in_end_time", "in_z"),
+                (instance_vbo, "2f 1f 3f 1f 1f 1f 1f/i",
+                 "in_pos", "in_radius", "in_color", "in_start_time", "in_end_time", "in_z", "in_is_slider_head"),
             ],
             index_buffer=index_buf,
         )
@@ -243,8 +293,8 @@ class OsuRenderer(mglw.WindowConfig):
                 self.approach_prog,
                 [
                     (quad_vbo, "2f", "in_vert"),
-                    (instance_vbo, "2f 1f 3f 1f 1f 1f/i",
-                     "in_pos", "in_radius", "in_color", "in_start_time", "in_end_time", "in_z"),
+                    (instance_vbo, "2f 1f 3f 1f 1f 1f 1f/i",
+                     "in_pos", "in_radius", "in_color", "in_start_time", "in_end_time", "in_z", "in_is_slider_head"),
                 ],
                 index_buffer=index_buf,
             )
@@ -271,7 +321,7 @@ class OsuRenderer(mglw.WindowConfig):
         self.path_tex_width = tex_w
 
         n = sd.n_sliders
-        color = self._skin.combo_colors()[0]
+        color = self._skin.slider_fill_color()
 
         buf = np.empty((n, 13), dtype="f4")
         buf[:, 0:2] = sd.bbox_min
@@ -357,24 +407,26 @@ class OsuRenderer(mglw.WindowConfig):
         buf = np.empty((n, 8), dtype="f4")
 
         # Trail (oldest first → draw first, head on top)
+        cursor_radius = self._skin_cursor_radius()
+        cursor_color = self._skin_cursor_color()
         for i, (t, x, y) in enumerate(self._trail):
             age = current_time_ms - t
             fade = max(0.0, 1.0 - age / TRAIL_LIFETIME_MS)
             shrink = 0.3 + 0.7 * fade
             buf[i, 0] = x
             buf[i, 1] = y
-            buf[i, 2] = CURSOR_RADIUS * shrink
-            buf[i, 3] = 1.0   # r
-            buf[i, 4] = 1.0   # g
-            buf[i, 5] = 0.85  # b
+            buf[i, 2] = cursor_radius * shrink
+            buf[i, 3] = cursor_color[0]
+            buf[i, 4] = cursor_color[1]
+            buf[i, 5] = cursor_color[2]
             buf[i, 6] = fade * 0.6  # alpha
             buf[i, 7] = -0.9  # z (very front)
 
         # Overwrite last entry as the head (full brightness)
-        buf[n - 1, 2] = CURSOR_RADIUS
-        buf[n - 1, 3] = 1.0
-        buf[n - 1, 4] = 1.0
-        buf[n - 1, 5] = 1.0
+        buf[n - 1, 2] = cursor_radius
+        buf[n - 1, 3] = cursor_color[0]
+        buf[n - 1, 4] = cursor_color[1]
+        buf[n - 1, 5] = cursor_color[2]
         buf[n - 1, 6] = 1.0
         buf[n - 1, 7] = -0.95
 
@@ -424,7 +476,8 @@ class OsuRenderer(mglw.WindowConfig):
             pos = p0 * (1.0 - frac) + p1 * frac
 
             z = sd.z_values[i] - 0.003
-            balls.append([pos[0], pos[1], data.circle_radius, 1.0, 1.0, 1.0, z])
+            color = self._skin.slider_ball_fill_color()
+            balls.append([pos[0], pos[1], data.circle_radius, color[0], color[1], color[2], z])
 
             if len(balls) >= MAX_SLIDER_BALLS:
                 break
@@ -511,6 +564,8 @@ class OsuRenderer(mglw.WindowConfig):
         if self.cursor_vao is not None:
             cursor_buf, n_cursor = self._build_cursor_instances(current_time_ms)
             if n_cursor > 0:
+                # Cursor shaders output premultiplied alpha.
+                self.ctx.blend_func = (moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
                 self._cursor_instance_buf.write(cursor_buf.tobytes())
                 self.cursor_vao.render(moderngl.TRIANGLES, instances=n_cursor)
 

@@ -17,6 +17,8 @@ import pyglet
 from build_version import get_display_version
 from osu_map.scanner import BeatmapScanner
 from runtime_paths import APP_ICON_PATH, APP_ROOT, MAPS_DIR, SETTINGS_PATH, ensure_runtime_dirs
+from skins import SKIN_REGISTRY
+from skins.default import DefaultSkinVisualSettings, make_default_skin_visual_settings
 from social import SocialClient
 from social.models import ChatMessagePayload, SharedReplay
 from ui.alert_overlay import AlertOverlay
@@ -35,6 +37,15 @@ def _shape_volume(value: float, exponent: float) -> float:
     return value ** exponent
 
 
+def _clamp_rgb(value, default: tuple[float, float, float]) -> tuple[float, float, float]:
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        try:
+            return tuple(_clamp01(channel) for channel in value)
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
 BUILD_VERSION = get_display_version()
 DESIGN_WIDTH = 1920.0
 DESIGN_HEIGHT = 1080.0
@@ -51,6 +62,7 @@ COMMON_RESOLUTIONS: tuple[tuple[int, int], ...] = (
 )
 SCREEN_MODES = ("windowed", "borderless", "fullscreen")
 FPS_LIMIT_OPTIONS = (0, 60, 120, 144, 180)
+_DEFAULT_SKIN_VISUALS = make_default_skin_visual_settings()
 
 
 @dataclass(slots=True)
@@ -76,6 +88,31 @@ class AppSettings:
     gameplay_cursor_trail: bool = True
     gameplay_cursor_trail_max_len: int = 256
     gameplay_circle_bloom: float = 0.50
+    skin_circle_fill_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.circle_fill_color
+    skin_circle_fill_opacity: float = _DEFAULT_SKIN_VISUALS.circle_fill_opacity
+    skin_circle_border_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.circle_border_color
+    skin_circle_border_width: float = _DEFAULT_SKIN_VISUALS.circle_border_width
+    skin_circle_bloom: float = _DEFAULT_SKIN_VISUALS.circle_bloom
+    skin_circle_bloom_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.circle_bloom_color
+    skin_slider_use_circle_head: bool = _DEFAULT_SKIN_VISUALS.slider_use_circle_head
+    skin_slider_head_fill_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.slider_head_fill_color
+    skin_slider_head_fill_opacity: float = _DEFAULT_SKIN_VISUALS.slider_head_fill_opacity
+    skin_slider_head_border_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.slider_head_border_color
+    skin_slider_head_border_width: float = _DEFAULT_SKIN_VISUALS.slider_head_border_width
+    skin_slider_head_bloom: float = _DEFAULT_SKIN_VISUALS.slider_head_bloom
+    skin_slider_head_bloom_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.slider_head_bloom_color
+    skin_slider_path_fill_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.slider_path_fill_color
+    skin_slider_path_fill_opacity: float = _DEFAULT_SKIN_VISUALS.slider_path_fill_opacity
+    skin_slider_path_border_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.slider_path_border_color
+    skin_slider_path_border_width: float = _DEFAULT_SKIN_VISUALS.slider_path_border_width
+    skin_slider_ball_fill_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.slider_ball_fill_color
+    skin_slider_ball_fill_opacity: float = _DEFAULT_SKIN_VISUALS.slider_ball_fill_opacity
+    skin_slider_ball_border_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.slider_ball_border_color
+    skin_slider_ball_border_width: float = _DEFAULT_SKIN_VISUALS.slider_ball_border_width
+    skin_slider_ball_bloom: float = _DEFAULT_SKIN_VISUALS.slider_ball_bloom
+    skin_slider_ball_bloom_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.slider_ball_bloom_color
+    skin_cursor_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.cursor_color
+    skin_cursor_size: float = _DEFAULT_SKIN_VISUALS.cursor_size
 
     @classmethod
     def load(cls, path: Path) -> "AppSettings":
@@ -114,6 +151,31 @@ class AppSettings:
             gameplay_cursor_trail=bool(data.get("gameplay_cursor_trail", defaults.gameplay_cursor_trail)),
             gameplay_cursor_trail_max_len=max(8, min(256, int(data.get("gameplay_cursor_trail_max_len", defaults.gameplay_cursor_trail_max_len)))),
             gameplay_circle_bloom=_clamp01(data.get("gameplay_circle_bloom", defaults.gameplay_circle_bloom)),
+            skin_circle_fill_color=_clamp_rgb(data.get("skin_circle_fill_color", defaults.skin_circle_fill_color), defaults.skin_circle_fill_color),
+            skin_circle_fill_opacity=_clamp01(data.get("skin_circle_fill_opacity", defaults.skin_circle_fill_opacity)),
+            skin_circle_border_color=_clamp_rgb(data.get("skin_circle_border_color", defaults.skin_circle_border_color), defaults.skin_circle_border_color),
+            skin_circle_border_width=_clamp01(data.get("skin_circle_border_width", defaults.skin_circle_border_width)),
+            skin_circle_bloom=_clamp01(data.get("skin_circle_bloom", defaults.skin_circle_bloom)),
+            skin_circle_bloom_color=_clamp_rgb(data.get("skin_circle_bloom_color", defaults.skin_circle_bloom_color), defaults.skin_circle_bloom_color),
+            skin_slider_use_circle_head=bool(data.get("skin_slider_use_circle_head", defaults.skin_slider_use_circle_head)),
+            skin_slider_head_fill_color=_clamp_rgb(data.get("skin_slider_head_fill_color", defaults.skin_slider_head_fill_color), defaults.skin_slider_head_fill_color),
+            skin_slider_head_fill_opacity=_clamp01(data.get("skin_slider_head_fill_opacity", defaults.skin_slider_head_fill_opacity)),
+            skin_slider_head_border_color=_clamp_rgb(data.get("skin_slider_head_border_color", defaults.skin_slider_head_border_color), defaults.skin_slider_head_border_color),
+            skin_slider_head_border_width=_clamp01(data.get("skin_slider_head_border_width", defaults.skin_slider_head_border_width)),
+            skin_slider_head_bloom=_clamp01(data.get("skin_slider_head_bloom", defaults.skin_slider_head_bloom)),
+            skin_slider_head_bloom_color=_clamp_rgb(data.get("skin_slider_head_bloom_color", defaults.skin_slider_head_bloom_color), defaults.skin_slider_head_bloom_color),
+            skin_slider_path_fill_color=_clamp_rgb(data.get("skin_slider_path_fill_color", defaults.skin_slider_path_fill_color), defaults.skin_slider_path_fill_color),
+            skin_slider_path_fill_opacity=_clamp01(data.get("skin_slider_path_fill_opacity", defaults.skin_slider_path_fill_opacity)),
+            skin_slider_path_border_color=_clamp_rgb(data.get("skin_slider_path_border_color", defaults.skin_slider_path_border_color), defaults.skin_slider_path_border_color),
+            skin_slider_path_border_width=_clamp01(data.get("skin_slider_path_border_width", defaults.skin_slider_path_border_width)),
+            skin_slider_ball_fill_color=_clamp_rgb(data.get("skin_slider_ball_fill_color", defaults.skin_slider_ball_fill_color), defaults.skin_slider_ball_fill_color),
+            skin_slider_ball_fill_opacity=_clamp01(data.get("skin_slider_ball_fill_opacity", defaults.skin_slider_ball_fill_opacity)),
+            skin_slider_ball_border_color=_clamp_rgb(data.get("skin_slider_ball_border_color", defaults.skin_slider_ball_border_color), defaults.skin_slider_ball_border_color),
+            skin_slider_ball_border_width=_clamp01(data.get("skin_slider_ball_border_width", defaults.skin_slider_ball_border_width)),
+            skin_slider_ball_bloom=_clamp01(data.get("skin_slider_ball_bloom", defaults.skin_slider_ball_bloom)),
+            skin_slider_ball_bloom_color=_clamp_rgb(data.get("skin_slider_ball_bloom_color", defaults.skin_slider_ball_bloom_color), defaults.skin_slider_ball_bloom_color),
+            skin_cursor_color=_clamp_rgb(data.get("skin_cursor_color", defaults.skin_cursor_color), defaults.skin_cursor_color),
+            skin_cursor_size=_clamp01(data.get("skin_cursor_size", defaults.skin_cursor_size)),
         )
 
     def save(self, path: Path) -> None:
@@ -148,6 +210,7 @@ class App(mglw.WindowConfig):
         self.wnd.exit_key = None
         self.wnd.fixed_aspect_ratio = None
         self.settings = AppSettings.load(self.settings_path)
+        self._apply_skin_visual_settings(notify_scene=False)
         self._menu_context_cache = None
         self._last_buffer_size = tuple(int(v) for v in self.wnd.buffer_size)
         self._pending_framebuffer_sync = False
@@ -584,6 +647,97 @@ class App(mglw.WindowConfig):
         setattr(self.settings, key, normalized)
         if persist:
             self._save_settings()
+
+    def skin_visual_settings(self) -> DefaultSkinVisualSettings:
+        return DefaultSkinVisualSettings(
+            circle_fill_color=self.settings.skin_circle_fill_color,
+            circle_fill_opacity=self.settings.skin_circle_fill_opacity,
+            circle_border_color=self.settings.skin_circle_border_color,
+            circle_border_width=self.settings.skin_circle_border_width,
+            circle_bloom=self.settings.skin_circle_bloom,
+            circle_bloom_color=self.settings.skin_circle_bloom_color,
+            slider_use_circle_head=self.settings.skin_slider_use_circle_head,
+            slider_head_fill_color=self.settings.skin_slider_head_fill_color,
+            slider_head_fill_opacity=self.settings.skin_slider_head_fill_opacity,
+            slider_head_border_color=self.settings.skin_slider_head_border_color,
+            slider_head_border_width=self.settings.skin_slider_head_border_width,
+            slider_head_bloom=self.settings.skin_slider_head_bloom,
+            slider_head_bloom_color=self.settings.skin_slider_head_bloom_color,
+            slider_path_fill_color=self.settings.skin_slider_path_fill_color,
+            slider_path_fill_opacity=self.settings.skin_slider_path_fill_opacity,
+            slider_path_border_color=self.settings.skin_slider_path_border_color,
+            slider_path_border_width=self.settings.skin_slider_path_border_width,
+            slider_ball_fill_color=self.settings.skin_slider_ball_fill_color,
+            slider_ball_fill_opacity=self.settings.skin_slider_ball_fill_opacity,
+            slider_ball_border_color=self.settings.skin_slider_ball_border_color,
+            slider_ball_border_width=self.settings.skin_slider_ball_border_width,
+            slider_ball_bloom=self.settings.skin_slider_ball_bloom,
+            slider_ball_bloom_color=self.settings.skin_slider_ball_bloom_color,
+            cursor_color=self.settings.skin_cursor_color,
+            cursor_size=self.settings.skin_cursor_size,
+        ).normalized()
+
+    def _apply_skin_visual_settings(self, *, notify_scene: bool = True) -> None:
+        visuals = self.skin_visual_settings()
+        for skin in SKIN_REGISTRY:
+            setter = getattr(skin, "set_visual_settings", None)
+            if callable(setter):
+                setter(visuals)
+        if notify_scene:
+            callback = getattr(self._scene, "on_skin_settings_changed", None)
+            if callable(callback):
+                callback()
+
+    def set_skin_setting(self, key: str, value, *, persist: bool = True) -> None:
+        if not hasattr(self.settings, key):
+            return
+        current = getattr(self.settings, key)
+        if isinstance(current, bool):
+            normalized = bool(value)
+        elif isinstance(current, tuple) and len(current) == 3:
+            normalized = _clamp_rgb(value, current)
+        else:
+            normalized = _clamp01(value)
+        if current == normalized:
+            return
+        setattr(self.settings, key, normalized)
+        if persist:
+            self._save_settings()
+        self._apply_skin_visual_settings()
+
+    def sync_skin_group_from_circle(self, target: str, *, persist: bool = True) -> None:
+        if target == "slider_head":
+            self.settings.skin_slider_head_fill_color = self.settings.skin_circle_fill_color
+            self.settings.skin_slider_head_fill_opacity = self.settings.skin_circle_fill_opacity
+            self.settings.skin_slider_head_border_color = self.settings.skin_circle_border_color
+            self.settings.skin_slider_head_border_width = self.settings.skin_circle_border_width
+            self.settings.skin_slider_head_bloom = self.settings.skin_circle_bloom
+            self.settings.skin_slider_head_bloom_color = self.settings.skin_circle_bloom_color
+        elif target == "slider_ball":
+            self.settings.skin_slider_ball_fill_color = self.settings.skin_circle_fill_color
+            self.settings.skin_slider_ball_fill_opacity = self.settings.skin_circle_fill_opacity
+            self.settings.skin_slider_ball_border_color = self.settings.skin_circle_border_color
+            self.settings.skin_slider_ball_border_width = self.settings.skin_circle_border_width
+            self.settings.skin_slider_ball_bloom = self.settings.skin_circle_bloom
+            self.settings.skin_slider_ball_bloom_color = self.settings.skin_circle_bloom_color
+        else:
+            return
+        if persist:
+            self._save_settings()
+        self._apply_skin_visual_settings()
+
+    def sync_skin_bloom_color_from_fill(self, target: str, *, persist: bool = True) -> None:
+        if target == "circle":
+            self.settings.skin_circle_bloom_color = self.settings.skin_circle_fill_color
+        elif target == "slider_head":
+            self.settings.skin_slider_head_bloom_color = self.settings.skin_slider_head_fill_color
+        elif target == "slider_ball":
+            self.settings.skin_slider_ball_bloom_color = self.settings.skin_slider_ball_fill_color
+        else:
+            return
+        if persist:
+            self._save_settings()
+        self._apply_skin_visual_settings()
 
     def _notify_audio_settings_changed(self) -> None:
         callback = getattr(self._scene, "on_global_audio_settings_changed", None)

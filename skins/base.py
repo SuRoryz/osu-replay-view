@@ -20,6 +20,33 @@ class Skin(ABC):
     def combo_colors(self) -> list[tuple[float, float, float]]:
         """RGB combo colour palette."""
 
+    def circle_fill_color(self, *, slider_head: bool = False) -> tuple[float, float, float]:
+        """Return the active fill colour for circles or slider heads."""
+        colors = self.combo_colors()
+        return colors[0] if colors else (1.0, 1.0, 1.0)
+
+    def slider_fill_color(self) -> tuple[float, float, float]:
+        """Return the active slider body fill colour."""
+        return self.circle_fill_color()
+
+    def slider_ball_fill_color(self) -> tuple[float, float, float]:
+        """Return the active slider ball fill colour."""
+        return self.circle_fill_color()
+
+    def sync_object_uniforms(
+        self,
+        *,
+        circle_prog=None,
+        approach_prog=None,
+        slider_prog=None,
+        spinner_prog=None,
+        ball_prog=None,
+    ) -> None:
+        """Push live style uniforms into already-compiled gameplay programs."""
+
+    def set_visual_settings(self, settings) -> None:
+        """Apply runtime-editable visual settings to the active skin."""
+
     def approach_shader_source(self) -> tuple[str, str] | None:
         """Return (vertex_glsl, fragment_glsl) for approach circles, or None to skip."""
         return None
