@@ -16,6 +16,7 @@ from ui.design import (
     draw_header_pair,
     draw_linear_progress,
     draw_surface,
+    draw_tab,
 )
 from ui.menu.animation import ease_out_back, ease_out_cubic
 from ui.menu.commands import RenderCommandBuffer
@@ -101,6 +102,122 @@ class SongSelectMenuView:
                 Rect(dot_x, cy, dot_r * 2.0, dot_r * 2.0),
                 radius=dot_r,
                 color=(color[0], color[1], color[2], 0.92 * alpha),
+                border_color=(0.0, 0.0, 0.0, 0.0),
+                border_width=0.0,
+            )
+
+    def _draw_settings_button(self, text, theme, rect: Rect, *, hovered: bool, alpha: float) -> None:
+        draw_button(
+            self._commands,
+            text,
+            theme,
+            rect,
+            label="",
+            size=1,
+            variant="secondary",
+            state=InteractionState.HOVER if hovered else InteractionState.REST,
+            radius=min(theme.shape.corner_m, rect.h * 0.3),
+            alpha=alpha,
+        )
+        self._draw_settings_icon(theme, rect, hovered=hovered, alpha=alpha)
+
+    def _draw_chat_button(self, text, theme, rect: Rect, *, hovered: bool, alpha: float) -> None:
+        colors = theme.colors
+        draw_button(
+            self._commands,
+            text,
+            theme,
+            rect,
+            label="",
+            size=1,
+            variant="secondary",
+            state=InteractionState.HOVER if hovered else InteractionState.REST,
+            radius=min(theme.shape.corner_m, rect.h * 0.3),
+            alpha=alpha,
+        )
+        icon_color = colors.text_primary if hovered else colors.text_secondary
+        bubble_w = rect.w * 0.315
+        bubble_h = rect.h * 0.21
+        bubble_rect = Rect(
+            rect.center_x - bubble_w * 0.5,
+            rect.center_y - bubble_h * 0.5 - rect.h * 0.05,
+            bubble_w,
+            bubble_h,
+        )
+        self._commands.panel(
+            bubble_rect,
+            radius=bubble_h * 0.42,
+            color=(icon_color[0], icon_color[1], icon_color[2], 0.94 * alpha),
+            border_color=(0.0, 0.0, 0.0, 0.0),
+            border_width=0.0,
+        )
+        tail_rect = Rect(
+            bubble_rect.x + bubble_w * 0.20,
+            bubble_rect.bottom - rect.h * 0.02,
+            rect.w * 0.075,
+            rect.h * 0.075,
+        )
+        self._commands.panel(
+            tail_rect,
+            radius=tail_rect.w * 0.25,
+            color=(icon_color[0], icon_color[1], icon_color[2], 0.94 * alpha),
+            border_color=(0.0, 0.0, 0.0, 0.0),
+            border_width=0.0,
+        )
+        dot_r = max(1.0, rect.w * 0.0225)
+        dot_y = bubble_rect.center_y - dot_r
+        for idx in range(3):
+            dot_x = bubble_rect.x + bubble_w * (0.30 + idx * 0.20) - dot_r
+            self._commands.panel(
+                Rect(dot_x, dot_y, dot_r * 2.0, dot_r * 2.0),
+                radius=dot_r,
+                color=(theme.colors.surface_variant_soft[0], theme.colors.surface_variant_soft[1], theme.colors.surface_variant_soft[2], 0.98 * alpha),
+                border_color=(0.0, 0.0, 0.0, 0.0),
+                border_width=0.0,
+            )
+
+    def _draw_settings_icon(self, theme, rect: Rect, *, hovered: bool, alpha: float) -> None:
+        colors = theme.colors
+        icon_color = colors.text_primary if hovered else colors.text_secondary
+        cx = rect.center_x
+        cy = rect.center_y
+        line_w = rect.w * 0.33
+        line_h = max(1.5, rect.h * 0.05625)
+        knob_r = rect.h * 0.0975
+        top_y = cy - rect.h * 0.18
+        bottom_y = cy + rect.h * 0.18
+
+        self._commands.panel(
+            Rect(cx - line_w * 0.5, top_y - line_h * 0.5, line_w, line_h),
+            radius=line_h * 0.5,
+            color=(icon_color[0], icon_color[1], icon_color[2], 0.94 * alpha),
+            border_color=(0.0, 0.0, 0.0, 0.0),
+            border_width=0.0,
+        )
+        self._commands.panel(
+            Rect(cx - line_w * 0.5, bottom_y - line_h * 0.5, line_w, line_h),
+            radius=line_h * 0.5,
+            color=(icon_color[0], icon_color[1], icon_color[2], 0.94 * alpha),
+            border_color=(0.0, 0.0, 0.0, 0.0),
+            border_width=0.0,
+        )
+        for knob_x, knob_y in (
+            (cx - line_w * 0.28, top_y),
+            (cx + line_w * 0.28, bottom_y),
+        ):
+            outer = knob_r * 2.0
+            inner = knob_r * 1.08
+            self._commands.panel(
+                Rect(knob_x - outer * 0.5, knob_y - outer * 0.5, outer, outer),
+                radius=outer * 0.5,
+                color=(icon_color[0], icon_color[1], icon_color[2], 0.94 * alpha),
+                border_color=(0.0, 0.0, 0.0, 0.0),
+                border_width=0.0,
+            )
+            self._commands.panel(
+                Rect(knob_x - inner * 0.5, knob_y - inner * 0.5, inner, inner),
+                radius=inner * 0.5,
+                color=(theme.colors.surface_variant_soft[0], theme.colors.surface_variant_soft[1], theme.colors.surface_variant_soft[2], 0.98 * alpha),
                 border_color=(0.0, 0.0, 0.0, 0.0),
                 border_width=0.0,
             )
@@ -523,6 +640,10 @@ class SongSelectMenuView:
                 replay_meta = "No beatmap selected"
             elif online_state.loading and not online_items:
                 replay_meta = "Loading..."
+            elif online_state.error and not online_items:
+                replay_meta = "Unavailable"
+            elif not online_items and online_state.loaded_at > 0.0:
+                replay_meta = "No replays found"
             else:
                 replay_meta = f"{len(online_items)} online"
         else:
@@ -542,10 +663,21 @@ class SongSelectMenuView:
         )
         toggle_h = 24.0 * density
         toggle_y = y - 1.0 * density
-        tab_w = 68.0 * density
-        local_tab_rect = Rect(inner.right - tab_w * 2.0 - 10.0 * density, toggle_y, tab_w, toggle_h)
-        online_tab_rect = Rect(local_tab_rect.right + 6.0 * density, toggle_y, tab_w, toggle_h)
-        draw_chip(
+        tabs_strip_rect = Rect(inner.right - 162.0 * density, toggle_y - 5.0 * density, 162.0 * density, 34.0 * density)
+        draw_surface(
+            self._commands,
+            theme,
+            tabs_strip_rect,
+            role="toolbar",
+            radius=10.0 * density,
+            alpha=0.50,
+            border_width=0.0,
+        )
+        tab_y = tabs_strip_rect.y + 5.0 * density
+        tab_w = (tabs_strip_rect.w - 22.0 * density) * 0.5
+        local_tab_rect = Rect(tabs_strip_rect.x + 8.0 * density, tab_y, tab_w, toggle_h)
+        online_tab_rect = Rect(local_tab_rect.right + 6.0 * density, tab_y, tab_w, toggle_h)
+        draw_tab(
             self._commands,
             text,
             theme,
@@ -556,7 +688,7 @@ class SongSelectMenuView:
             hovered=local_tab_rect.contains(scene._mouse_x, scene._mouse_y),
             alpha=0.92,
         )
-        draw_chip(
+        draw_tab(
             self._commands,
             text,
             theme,
@@ -627,9 +759,12 @@ class SongSelectMenuView:
             ry = section_rect.y + 8.0 * density - scene._replay_scroll_current
             if online_state.loading and not online_items:
                 self._commands.text("Loading online replays...", section_rect.x + 12.0 * density, section_rect.y + 14.0 * density, layout.context.tokens.typography.body_m, color=colors.text_muted)
+            elif online_state.error and not online_items:
+                self._commands.text("Replay server unavailable", section_rect.x + 12.0 * density, section_rect.y + 14.0 * density, layout.context.tokens.typography.body_m, color=colors.text_muted)
+                self._commands.text("Use refresh to try again.", section_rect.x + 12.0 * density, section_rect.y + 34.0 * density, layout.context.tokens.typography.caption, color=colors.text_muted, alpha=0.65)
             elif not online_items:
-                self._commands.text("No online replays yet", section_rect.x + 12.0 * density, section_rect.y + 14.0 * density, layout.context.tokens.typography.body_m, color=colors.text_muted)
-                self._commands.text("Upload a replay from the local tab to populate this beatmap.", section_rect.x + 12.0 * density, section_rect.y + 34.0 * density, layout.context.tokens.typography.caption, color=colors.text_muted, alpha=0.65)
+                self._commands.text("No replays found", section_rect.x + 12.0 * density, section_rect.y + 14.0 * density, layout.context.tokens.typography.body_m, color=colors.text_muted)
+                self._commands.text("Upload one from the local tab or refresh later.", section_rect.x + 12.0 * density, section_rect.y + 34.0 * density, layout.context.tokens.typography.caption, color=colors.text_muted, alpha=0.65)
             for item in online_items:
                 scene._sync_online_replay_local_state(item)
                 row_rect = Rect(section_rect.x + 4.0 * density, ry, section_rect.w - 8.0 * density, row_h)
@@ -834,12 +969,16 @@ class SongSelectMenuView:
         )
         inner_pad = 14.0 * density
         play_button_w = 116.0 * density
-        settings_button_w = 122.0 * density
         mods_button_w = 92.0 * density
         play_h = max(30.0 * density, bar_rect.h - 12.0 * density)
+        icon_button_size = play_h * 0.75
+        chat_button_w = icon_button_size
+        settings_button_w = icon_button_size
         play_y = bar_rect.y + (bar_rect.h - play_h) * 0.5
+        icon_button_y = bar_rect.y + (bar_rect.h - icon_button_size) * 0.5
         play_x = bar_rect.right - play_button_w - inner_pad
         settings_x = play_x - settings_button_w - 10.0 * density
+        chat_x = settings_x - chat_button_w - 8.0 * density
         mods_rect = Rect(bar_rect.x + inner_pad, play_y, mods_button_w, play_h)
         scene._mods_trigger_rect = mods_rect.tuple()
 
@@ -860,7 +999,7 @@ class SongSelectMenuView:
 
         active_count = sum(1 for _, flag in scene.mod_flag_map.items() if flag and scene._active_mods & flag)
         summary_x = mods_rect.right + 16.0 * density
-        summary_w = max(120.0, settings_x - summary_x - 14.0 * density)
+        summary_w = max(120.0, chat_x - summary_x - 14.0 * density)
         selected_mods = scene.mod_string(scene._active_mods) or "No mod"
         if scene._multi_replay_enabled:
             selected_mods = f"{scene._selected_replay_count()} replays  {selected_mods}"
@@ -879,20 +1018,12 @@ class SongSelectMenuView:
 
         play_hover = Rect(play_x, play_y, play_button_w, play_h).contains(scene._mouse_x, scene._mouse_y)
         play_rect = Rect(play_x, play_y, play_button_w, play_h)
-        settings_rect = Rect(settings_x, play_y, settings_button_w, play_h)
+        chat_rect = Rect(chat_x, icon_button_y, chat_button_w, icon_button_size)
+        settings_rect = Rect(settings_x, icon_button_y, settings_button_w, icon_button_size)
+        chat_hover = chat_rect.contains(scene._mouse_x, scene._mouse_y)
         settings_hover = settings_rect.contains(scene._mouse_x, scene._mouse_y)
-        draw_button(
-            self._commands,
-            text,
-            theme,
-            settings_rect,
-            label="SETTINGS",
-            size=layout.context.tokens.typography.body_m,
-            variant="secondary",
-            state=InteractionState.HOVER if settings_hover else InteractionState.REST,
-            radius=layout.context.tokens.radius_m,
-            alpha=0.90,
-        )
+        self._draw_chat_button(text, theme, chat_rect, hovered=chat_hover, alpha=0.90)
+        self._draw_settings_button(text, theme, settings_rect, hovered=settings_hover, alpha=0.90)
         draw_button(
             self._commands,
             text,
@@ -906,6 +1037,7 @@ class SongSelectMenuView:
             alpha=0.92,
         )
         scene._play_btn_rect = play_rect.tuple()
+        scene._chat_btn_rect = chat_rect.tuple()
         scene._settings_btn_rect = settings_rect.tuple()
         scene.app.set_settings_button(settings_rect.tuple(), visible=True)
         self._draw_mods_palette(scene, theme, bar_rect, mods_rect, density)

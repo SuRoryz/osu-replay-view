@@ -218,6 +218,7 @@ class App(mglw.WindowConfig):
         self._restart_spawned = False
         self._settings_button_rect: tuple[float, float, float, float] | None = None
         self._settings_button_visible = False
+        self._mouse_cursor_style = "default"
         self._last_frame_limit_tick: float | None = None
         self._windowed_size = (
             int(self.settings.resolution_width),
@@ -294,6 +295,7 @@ class App(mglw.WindowConfig):
         self.social_overlay.draw(frametime)
         self.settings_overlay.draw(frametime)
         self.alert_overlay.draw()
+        self._update_mouse_cursor()
 
     def on_resize(self, width: int, height: int):
         self._pending_framebuffer_sync = True
@@ -392,6 +394,49 @@ class App(mglw.WindowConfig):
     def on_close(self):
         self.social_client.shutdown()
         self._scene.on_leave()
+
+    def _set_mouse_cursor_style(self, style: str) -> None:
+        style = style if style in {"default", "hand", "text"} else "default"
+        if style == self._mouse_cursor_style:
+            return
+        window = getattr(self.wnd, "_window", None)
+        if window is None:
+            return
+        getter = getattr(window, "get_system_mouse_cursor", None)
+        setter = getattr(window, "set_mouse_cursor", None)
+        if not callable(setter):
+            return
+        try:
+            if style == "default":
+                setter(None)
+            else:
+                cursor_name = getattr(
+                    pyglet.window.Window,
+                    "CURSOR_TEXT" if style == "text" else "CURSOR_HAND",
+                    None,
+                )
+                if cursor_name is None or not callable(getter):
+                    return
+                setter(getter(cursor_name))
+        except Exception:
+            return
+        self._mouse_cursor_style = style
+
+    def _update_mouse_cursor(self) -> None:
+        style = "default"
+        if self.settings_overlay.wants_text_cursor():
+            style = "text"
+        elif self.social_overlay.wants_text_cursor():
+            style = "text"
+        elif self.settings_overlay.wants_hand_cursor():
+            style = "hand"
+        elif self.social_overlay.wants_hand_cursor():
+            style = "hand"
+        else:
+            scene_cursor = getattr(self._scene, "wants_hand_cursor", None)
+            if callable(scene_cursor) and scene_cursor():
+                style = "hand"
+        self._set_mouse_cursor_style(style)
 
     def _social_command_context(self):
         if hasattr(self._scene, "build_chat_share"):

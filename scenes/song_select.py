@@ -257,6 +257,7 @@ class SongSelectScene(Scene):
         self._replay_context_menu_options: list[tuple[float, float, float, float, str]] = []
         self._replay_context_target: str | None = None
         self._replay_context_menu_anim = AnimatedFloat(0.0, 0.0, 16.0)
+        self._chat_btn_rect: tuple[float, float, float, float] | None = None
         self._songs_open_btn_rect: tuple[int, int, int, int] | None = None
         self._song_list_interact_rect: object | None = None
         self._song_card_rects: list[tuple[float, float, float, float, int]] = []
@@ -1441,6 +1442,37 @@ class SongSelectScene(Scene):
         rx, ry, rw, rh = rect[:4]
         return rx <= x <= rx + rw and ry <= y <= ry + rh
 
+    def wants_hand_cursor(self) -> bool:
+        if self._dragging_songs or self._dragging_replays:
+            return False
+        x = self._mouse_x
+        y = self._mouse_y
+        clickable_rects = [
+            getattr(self, "_play_btn_rect", None),
+            self._chat_btn_rect,
+            getattr(self, "_settings_btn_rect", None),
+            self._songs_open_btn_rect,
+            self._replay_local_tab_rect,
+            self._replay_online_tab_rect,
+            self._multi_toggle_rect,
+            self._danser_toggle_rect,
+            self._mods_trigger_rect,
+        ]
+        for rect in clickable_rects:
+            if rect is not None and self._is_in_rect(x, y, rect):
+                return True
+        for ax, ay, aw, ah, _token in self._replay_action_rects:
+            if ax <= x <= ax + aw and ay <= y <= ay + ah:
+                return True
+        for mx, my, mw, mh, flag in self._mod_rects:
+            if flag and mx <= x <= mx + mw and my <= y <= my + mh:
+                return True
+        if self._replay_context_menu_rect is not None:
+            for ox, oy, ow, oh, _action in self._replay_context_menu_options:
+                if ox <= x <= ox + ow and oy <= y <= oy + oh:
+                    return True
+        return False
+
     def _update_replay_mods(self) -> None:
         """Refresh the default mods from the current replay selection."""
         primary = self._primary_selected_replay()
@@ -2113,6 +2145,10 @@ class SongSelectScene(Scene):
             if sx <= x <= sx + sw and sy <= y <= sy + sh:
                 self.app.toggle_settings()
                 return
+
+        if self._chat_btn_rect and self._is_in_rect(x, y, self._chat_btn_rect):
+            self.app.social_overlay.toggle()
+            return
 
         if self._songs_open_btn_rect and self._is_in_rect(x, y, self._songs_open_btn_rect):
             self.app.open_maps_folder()

@@ -3,6 +3,7 @@
 from ui.design.components import (
     draw_button,
     draw_chip,
+    draw_tab,
     draw_divider,
     draw_dropdown_menu,
     draw_linear_progress,
@@ -27,6 +28,7 @@ __all__ = [
     "build_desktop_theme",
     "draw_button",
     "draw_chip",
+    "draw_tab",
     "draw_divider",
     "draw_dropdown_menu",
     "draw_linear_progress",

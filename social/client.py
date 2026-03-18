@@ -332,10 +332,11 @@ class SocialClient:
 
     def fetch_online_replays(self, beatmap_id: int, *, force: bool = False) -> ReplayTabState:
         state = self.replay_tabs.setdefault(beatmap_id, ReplayTabState())
-        if state.loading or (state.items and not force):
+        if state.loading or (state.requested_at > 0.0 and not force):
             return state
         state.loading = True
         state.error = None
+        state.requested_at = time.time()
         self._replay_loads.add(beatmap_id)
         self._spawn(
             f"replays:{beatmap_id}",

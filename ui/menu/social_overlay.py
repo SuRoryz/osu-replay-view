@@ -12,6 +12,7 @@ from ui.design import (
     draw_dropdown_menu,
     draw_supporting_text,
     draw_surface,
+    draw_tab,
     draw_text_field,
 )
 from ui.menu.animation import AnimatedFloat, ease_in_out_cubic, ease_out_back, ease_out_cubic
@@ -224,6 +225,44 @@ class SocialOverlay:
             return True
         return self.is_visible
 
+    def wants_hand_cursor(self) -> bool:
+        if not self.is_visible:
+            return False
+        for rect, _channel_id in self._channel_tab_rects:
+            if rect.contains(self._mouse_x, self._mouse_y):
+                return True
+        for rect, _user_uuid in self._sender_rects:
+            if rect.contains(self._mouse_x, self._mouse_y):
+                return True
+        for rect, _payload in self._message_link_rects:
+            if rect.contains(self._mouse_x, self._mouse_y):
+                return True
+        for rect, _user_uuid in self._user_rects:
+            if rect.contains(self._mouse_x, self._mouse_y):
+                return True
+        for option in self._menu_rects:
+            if option.rect.contains(self._mouse_x, self._mouse_y):
+                return True
+        return any(
+            rect.contains(self._mouse_x, self._mouse_y)
+            for rect in (
+                self._users_all_rect,
+                self._users_friends_rect,
+            )
+        )
+
+    def wants_text_cursor(self) -> bool:
+        if not self.is_visible:
+            return False
+        return any(
+            rect.contains(self._mouse_x, self._mouse_y)
+            for rect in (
+                self._input_rect,
+                self._search_rect,
+                self._room_rect,
+            )
+        )
+
     def draw(self, dt: float) -> None:
         self._drawer_anim.update(dt)
         self._panel_anim.update(dt)
@@ -367,34 +406,15 @@ class SocialOverlay:
             (all_rect, "All", self._users_tab == "all"),
             (friends_rect, "Friends", self._users_tab == "friends"),
         ):
-            hovered = tab_rect.contains(self._mouse_x, self._mouse_y)
-            commands.panel(
+            draw_tab(
+                commands,
+                self.app.text,
+                theme,
                 tab_rect,
-                radius=tab_rect.h * 0.5,
-                color=(
-                    colors.surface_container[0],
-                    colors.surface_container[1],
-                    colors.surface_container[2],
-                    (0.28 if selected else (0.16 if hovered else 0.08)) * panel_progress,
-                ),
-                border_color=(0.0, 0.0, 0.0, 0.0),
-                border_width=0.0,
-            )
-            if selected:
-                commands.panel(
-                    Rect(tab_rect.x + 10.0 * density, tab_rect.bottom + 4.0 * density, tab_rect.w - 20.0 * density, 2.0 * density),
-                    radius=1.0 * density,
-                    color=(colors.focus_ring[0], colors.focus_ring[1], colors.focus_ring[2], 0.86 * panel_progress),
-                    border_color=(0.0, 0.0, 0.0, 0.0),
-                    border_width=0.0,
-                )
-            label_w, _ = self.app.text.measure(label, layout.tokens.typography.caption)
-            commands.text(
-                label,
-                tab_rect.x + (tab_rect.w - label_w) * 0.5,
-                tab_rect.y + (tab_rect.h - layout.tokens.typography.caption) * 0.5 - 1.0,
-                layout.tokens.typography.caption,
-                color=colors.text_primary if selected else (colors.text_secondary if hovered else colors.text_muted),
+                label=label,
+                size=layout.tokens.typography.caption,
+                selected=selected,
+                hovered=tab_rect.contains(self._mouse_x, self._mouse_y),
                 alpha=0.92 * panel_progress,
             )
         self._search_rect = Rect(panel_rect.x + 16.0 * density, friends_rect.bottom + 16.0 * density, panel_rect.w - 32.0 * density, 34.0 * density)
@@ -529,34 +549,15 @@ class SocialOverlay:
                 label_w, _ = self.app.text.measure(label, layout.tokens.typography.caption)
                 tab_w = min(160.0 * density, max(76.0 * density, label_w + 22.0 * density))
                 tab_rect = Rect(tab_x, tab_y, tab_w, tab_h)
-                hovered = tab_rect.contains(self._mouse_x, self._mouse_y)
-                selected = channel_id == self.client.active_channel_id
-                commands.panel(
+                draw_tab(
+                    commands,
+                    self.app.text,
+                    theme,
                     tab_rect,
-                    radius=tab_rect.h * 0.5,
-                    color=(
-                        colors.surface_container[0],
-                        colors.surface_container[1],
-                        colors.surface_container[2],
-                        (0.28 if selected else (0.16 if hovered else 0.08)) * drawer_progress,
-                    ),
-                    border_color=(0.0, 0.0, 0.0, 0.0),
-                    border_width=0.0,
-                )
-                if selected:
-                    commands.panel(
-                        Rect(tab_rect.x + 10.0 * density, tab_rect.bottom + 2.0 * density, tab_rect.w - 2.0 * density, 2.0 * density),
-                        radius=1.0 * density,
-                        color=(colors.focus_ring[0], colors.focus_ring[1], colors.focus_ring[2], 0.86 * drawer_progress),
-                        border_color=(0.0, 0.0, 0.0, 0.0),
-                        border_width=0.0,
-                    )
-                commands.text(
-                    label,
-                    tab_rect.x + (tab_rect.w - label_w) * 0.5 + label_w * 0.25,
-                    tab_rect.y + (tab_rect.h - layout.tokens.typography.caption) * 0.5 - 1.0,
-                    layout.tokens.typography.caption,
-                    color=colors.text_primary if selected else (colors.text_secondary if hovered else colors.text_muted),
+                    label=label,
+                    size=layout.tokens.typography.caption,
+                    selected=channel_id == self.client.active_channel_id,
+                    hovered=tab_rect.contains(self._mouse_x, self._mouse_y),
                     alpha=0.92 * drawer_progress,
                 )
                 self._channel_tab_rects.append((tab_rect, channel_id))

@@ -194,4 +194,5 @@ class ReplayTabState:
     items: list[OnlineReplayMetadata] = field(default_factory=list)
     loading: bool = False
     error: str | None = None
+    requested_at: float = 0.0
     loaded_at: float = 0.0

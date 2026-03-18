@@ -178,6 +178,53 @@ def draw_chip(
     )
 
 
+def draw_tab(
+    commands,
+    text,
+    theme,
+    rect,
+    *,
+    label: str,
+    size: int,
+    selected: bool = False,
+    hovered: bool = False,
+    alpha: float = 1.0,
+) -> None:
+    colors = theme.colors
+    fill_alpha = alpha * (0.28 if selected else (0.16 if hovered else 0.08))
+    commands.panel(
+        rect,
+        radius=min(theme.shape.corner_s, rect.h * 0.5),
+        color=rgba(colors.surface_container, fill_alpha),
+        border_color=(0.0, 0.0, 0.0, 0.0),
+        border_width=0.0,
+    )
+    if selected:
+        underline_w = max(18.0, rect.w - 20.0)
+        underline_rect = type(rect)(
+            rect.center_x - underline_w * 0.5,
+            rect.bottom + 2.0,
+            underline_w,
+            2.0,
+        )
+        commands.panel(
+            underline_rect,
+            radius=1.0,
+            color=rgba(colors.focus_ring, 0.86 * alpha),
+            border_color=(0.0, 0.0, 0.0, 0.0),
+            border_width=0.0,
+        )
+    label_w, _ = text.measure(label, size)
+    commands.text(
+        label,
+        rect.x + (rect.w - label_w) * 0.5,
+        rect.y + (rect.h - size) * 0.5 - 1.0,
+        size,
+        color=colors.text_primary if selected else (colors.text_secondary if hovered else colors.text_muted),
+        alpha=alpha,
+    )
+
+
 def draw_slider(
     commands,
     theme,

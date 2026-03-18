@@ -614,6 +614,18 @@ class SettingsOverlay:
         )
         return True
 
+    def wants_hand_cursor(self) -> bool:
+        if not self.is_visible:
+            return False
+        if not self._open:
+            return self._button_hover
+        return self._hovered_id is not None and not self._hovered_id.startswith("field:")
+
+    def wants_text_cursor(self) -> bool:
+        if not self.is_visible or not self._open:
+            return False
+        return self._hovered_id is not None and self._hovered_id.startswith("field:")
+
     def _draw_section_shell(
         self,
         commands: RenderCommandBuffer,
