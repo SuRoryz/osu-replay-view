@@ -8,13 +8,20 @@ from pydantic import BaseModel, Field
 class PlayerIdentifyRequest(BaseModel):
     player_uuid: str = Field(min_length=8, max_length=64)
     nickname: str = Field(default="", max_length=16)
+    status_text: str = Field(default="", max_length=512)
 
 
 class PlayerPresenceResponse(BaseModel):
     player_uuid: str
     nickname: str
     online: bool
+    status_text: str = ""
     last_seen: datetime
+
+
+class PlayerStatusUpdateRequest(BaseModel):
+    player_uuid: str = Field(min_length=8, max_length=64)
+    status_text: str = Field(default="", max_length=512)
 
 
 class ChannelCreateRequest(BaseModel):

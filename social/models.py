@@ -12,6 +12,7 @@ class OnlineUser:
     player_uuid: str
     nickname: str
     online: bool
+    status_text: str = ""
     last_seen: datetime | None = None
     is_friend: bool = False
     is_blocked: bool = False

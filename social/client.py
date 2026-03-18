@@ -74,6 +74,9 @@ class SocialClient:
         self.command_context_provider: Callable[[], object | None] | None = None
         self.chat_payload_handler: Callable[[ChatMessagePayload], None] | None = None
         self.download_event_handler: Callable[[str, dict], None] | None = None
+        self._presence_status_text = ""
+        self._last_synced_presence_status_text = ""
+        self._presence_status_sync_in_flight = False
 
     @staticmethod
     def _build_ws_url(base_url: str) -> str:
@@ -89,15 +92,24 @@ class SocialClient:
             except Exception:
                 pass
 
-    def update(self, nickname: str) -> None:
+    def update(self, nickname: str, status_text: str = "") -> None:
         nickname = (nickname or "").strip()[:16] or f"user-{self.player_uuid[:8]}"
+        normalized_status = str(status_text or "").strip()[:512]
         self.nickname = nickname
+        self._presence_status_text = normalized_status
         self._drain_events()
         if not self.connected and not self.connecting:
             self._identify()
         elif time.time() >= self._presence_refresh_at and not self.connecting:
             self.refresh_presence()
             self._presence_refresh_at = time.time() + 20.0
+        if (
+            self.connected
+            and not self.connecting
+            and not self._presence_status_sync_in_flight
+            and self._presence_status_text != self._last_synced_presence_status_text
+        ):
+            self._sync_presence_status()
 
     def push_system_message(self, text: str, channel_id: str | None = None) -> None:
         with self._lock:
@@ -153,10 +165,28 @@ class SocialClient:
             return self._request_json(
                 "POST",
                 "/session/identify",
-                json_body={"player_uuid": self.player_uuid, "nickname": self.nickname},
+                json_body={
+                    "player_uuid": self.player_uuid,
+                    "nickname": self.nickname,
+                    "status_text": self._presence_status_text,
+                },
             )
 
         self._spawn("identify", worker)
+
+    def _sync_presence_status(self) -> None:
+        self._presence_status_sync_in_flight = True
+        requested_status = self._presence_status_text
+
+        def worker():
+            self._request_json(
+                "POST",
+                "/session/status",
+                json_body={"player_uuid": self.player_uuid, "status_text": requested_status},
+            )
+            return requested_status
+
+        self._spawn("presence_status", worker)
 
     def refresh_presence(self) -> None:
         self._spawn("presence", lambda: self._request_json("GET", "/social/presence"))
@@ -462,6 +492,10 @@ class SocialClient:
             elif name == "presence":
                 self.connection_error = None
                 self._apply_presence(payload)
+            elif name == "presence_status":
+                self.connection_error = None
+                self._last_synced_presence_status_text = str(payload or "")
+                self._presence_status_sync_in_flight = False
             elif name == "channels":
                 self.connection_error = None
                 self._apply_channels(payload)
@@ -533,6 +567,7 @@ class SocialClient:
             elif name == "ws_closed":
                 self.connected = False
                 self.connecting = False
+                self._presence_status_sync_in_flight = False
             elif name == "friend_set" or name == "block_set":
                 pass
             elif name == "error":
@@ -543,6 +578,8 @@ class SocialClient:
                     error_text = str(payload[1])
                 self.connection_error = f"{event_name}: {error_text}" if event_name else error_text
                 self.connecting = False
+                if event_name in {"identify", "presence_status"}:
+                    self._presence_status_sync_in_flight = False
                 if event_name.startswith("replays:"):
                     beatmap_id = int(event_name.split(":", 1)[1])
                     self._replay_loads.discard(beatmap_id)
@@ -609,6 +646,7 @@ class SocialClient:
                     player_uuid=player_uuid,
                     nickname=str(row.get("nickname") or f"user-{player_uuid[:8]}"),
                     online=bool(row.get("online")),
+                    status_text=str(row.get("status_text") or ""),
                     last_seen=_parse_datetime(row.get("last_seen")),
                     is_friend=player_uuid in self.local_state.friends,
                     is_blocked=player_uuid in self.local_state.blocked,

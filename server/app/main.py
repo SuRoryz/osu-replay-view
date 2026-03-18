@@ -27,6 +27,7 @@ from .schemas import (
     MessageResponse,
     PlayerIdentifyRequest,
     PlayerPresenceResponse,
+    PlayerStatusUpdateRequest,
     RelationshipRequest,
     ReplayResponse,
     ReplayUploadResponse,
@@ -36,6 +37,7 @@ from .schemas import (
 class ConnectionManager:
     def __init__(self) -> None:
         self._connections: dict[str, set[WebSocket]] = defaultdict(set)
+        self._status_text: dict[str, str] = {}
 
     async def connect(self, player_uuid: str, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -48,9 +50,24 @@ class ConnectionManager:
         sockets.discard(websocket)
         if not sockets:
             self._connections.pop(player_uuid, None)
+            self._status_text.pop(player_uuid, None)
 
     def online_ids(self) -> set[str]:
         return set(self._connections.keys())
+
+    def status_text_for(self, player_uuid: str) -> str:
+        return self._status_text.get(player_uuid, "")
+
+    def set_status_text(self, player_uuid: str, status_text: str) -> bool:
+        normalized = status_text[:512].strip()
+        current = self._status_text.get(player_uuid, "")
+        if current == normalized:
+            return False
+        if normalized:
+            self._status_text[player_uuid] = normalized
+        else:
+            self._status_text.pop(player_uuid, None)
+        return True
 
     async def send_to_player(self, player_uuid: str, payload: dict) -> None:
         encoded_payload = jsonable_encoder(payload)
@@ -149,6 +166,7 @@ def presence_snapshot(session) -> list[PlayerPresenceResponse]:
             player_uuid=player.player_uuid,
             nickname=player.nickname,
             online=player.player_uuid in online,
+            status_text=app.state.manager.status_text_for(player.player_uuid),
             last_seen=player.last_seen,
         )
         for player in players
@@ -209,6 +227,7 @@ def health() -> dict:
 async def identify(body: PlayerIdentifyRequest):
     with session_scope(SessionLocal) as session:
         player = ensure_player(session, body.player_uuid, body.nickname)
+        app.state.manager.set_status_text(player.player_uuid, body.status_text)
         lobby = session.scalar(select(Channel).where(Channel.name == "#lobby"))
         if lobby is None:
             lobby = Channel(name="#lobby", topic="Global chat", kind="room")
@@ -232,6 +251,14 @@ async def identify(body: PlayerIdentifyRequest):
 def social_presence():
     with session_scope(SessionLocal) as session:
         return presence_snapshot(session)
+
+
+@app.post("/session/status")
+async def session_status(body: PlayerStatusUpdateRequest):
+    changed = app.state.manager.set_status_text(body.player_uuid, body.status_text)
+    if changed:
+        await app.state.manager.broadcast({"type": "presence_changed"})
+    return {"ok": True}
 
 
 @app.get("/social/channels", response_model=list[ChannelResponse])

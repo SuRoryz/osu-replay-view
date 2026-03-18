@@ -287,7 +287,7 @@ class App(mglw.WindowConfig):
         if self._pending_framebuffer_sync or current_buffer_size != self._last_buffer_size:
             self._sync_framebuffer_state()
         self.ctx.scissor = None
-        self.social_client.update(self.settings.nickname)
+        self.social_client.update(self.settings.nickname, self._social_presence_status_text())
         self._update_shared_replay_batch()
         self.alert_overlay.update(frametime)
         self._scene.on_render(time, frametime)
@@ -397,6 +397,16 @@ class App(mglw.WindowConfig):
         if hasattr(self._scene, "build_chat_share"):
             return self._scene
         return None
+
+    def _social_presence_status_text(self) -> str:
+        if type(self._scene).__name__ != "GameplayScene":
+            return ""
+        beatmap = getattr(self._scene, "_binfo", None)
+        if beatmap is None:
+            return ""
+        title = str(getattr(beatmap, "title_unicode", "") or getattr(beatmap, "title", "") or "Unknown map").strip()
+        version = str(getattr(beatmap, "version", "") or "?").strip()
+        return f"Listening {title} - {version}"
 
     def _ensure_song_select_scene(self):
         from scenes.song_select import SongSelectScene
