@@ -475,7 +475,7 @@ class GameplayScene(Scene):
                             effective_mods=mods,
                             replay=None,
                             visual_replay=None,
-                            cpath=DanserPlaystyle(beatmap, render_data),
+                            cpath=DanserPlaystyle(beatmap, render_data, hr_flip=hr_flip),
                             judge=None,
                             score_timeline=StablePerformanceTimeline.build(
                                 beatmap=beatmap,
@@ -2520,7 +2520,7 @@ class GameplayScene(Scene):
             tooltip_h = 24.0
             tip_x = line_x + layout["line_w"] * hover_progress - tooltip_w / 2.0
             tip_x = max(layout["bounds_x"] + 10.0, min(layout["bounds_x"] + layout["bounds_w"] - tooltip_w - 10.0, tip_x))
-            tip_y = line_y - 24.0
+            tip_y = line_y - 30.0
             panels.draw(
                 tip_x, tip_y, tooltip_w, tooltip_h,
                 radius=10.0,
@@ -2528,7 +2528,7 @@ class GameplayScene(Scene):
                 border_color=(0.0, 0.0, 0.0, 0.0),
                 border_width=0.0,
             )
-            text.draw(hover_text, tip_x + 9.0, tip_y + 5.0, 13,
+            text.draw(hover_text, tip_x + 9.0, tip_y + 2.0, 13,
                       color=colors.text_primary, alpha=0.98 * alpha)
 
     # ----------------------------------------------------------- render

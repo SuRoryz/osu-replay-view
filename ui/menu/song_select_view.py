@@ -446,7 +446,7 @@ class SongSelectMenuView:
             else:
                 meta_text = "No difficulties found"
             meta_text = _truncate_text(text, meta_text, meta_size, text_max_w)
-            content_x = card_rect.x + 22.0 * density
+            content_x = card_rect.x + 26.0 * density
             self._commands.text(title, content_x, card_rect.y + 14.0 * density, title_size, color=colors.text_primary, alpha=0.96)
             self._commands.text(artist, content_x, card_rect.y + 39.0 * density, artist_size, color=colors.text_secondary, alpha=0.88)
             self._commands.text(
@@ -535,7 +535,7 @@ class SongSelectMenuView:
         y = inner.y
         title_raw = info.title_unicode or info.title
         artist_raw = info.artist_unicode or info.artist
-        hero_h = min(168.0 * density, panel_rect.h * 0.34)
+        hero_h = min(128.0 * density, panel_rect.h * 0.34)
         hero_rect = Rect(inner.x, inner.y, inner.w, hero_h)
         self._commands.panel(
             hero_rect,
@@ -544,18 +544,10 @@ class SongSelectMenuView:
             border_color=(0.0, 0.0, 0.0, 0.0),
             border_width=0.0,
         )
-        top_band_h = 34.0 * density
-        self._commands.panel(
-            Rect(hero_rect.x, hero_rect.y, hero_rect.w, top_band_h),
-            radius=12.0 * density,
-            color=(colors.surface_variant_soft[0], colors.surface_variant_soft[1], colors.surface_variant_soft[2], 0.32),
-            border_color=(0.0, 0.0, 0.0, 0.0),
-            border_width=0.0,
-        )
 
         title_plate_rect = Rect(
-            hero_rect.x + 14.0 * density,
-            hero_rect.y + 0.0 * density,
+            hero_rect.x + 0.0 * density,
+            hero_rect.y - 10.0 * density,
             hero_rect.w - 28.0 * density,
             max(54.0 * density, hero_rect.h - 84.0 * density),
         )
@@ -586,7 +578,7 @@ class SongSelectMenuView:
         self._commands.text(
             diff_text,
             diff_draw_rect.x + 9.0 * density,
-            diff_draw_rect.y + 5.0 * density,
+            diff_draw_rect.y + 2.0 * density,
             caption_size,
             color=colors.text_primary,
         )
@@ -654,7 +646,7 @@ class SongSelectMenuView:
             theme,
             label="Replays",
             meta=replay_meta,
-            x=inner.x,
+            x=inner.x + 12.0,
             y=y,
             label_size=layout.context.tokens.typography.body_l,
             meta_size=layout.context.tokens.typography.body_s,

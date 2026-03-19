@@ -255,7 +255,7 @@ class SettingsOverlay:
             base_commands,
             theme,
             "Audio, display, gameplay, and profile preferences",
-            layout.subtitle_rect.x,
+            layout.title_rect.x,
             layout.subtitle_rect.y + 2.0,
             layout.context.tokens.typography.body_s,
             alpha=0.92 * drawer_progress,

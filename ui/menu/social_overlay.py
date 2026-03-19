@@ -447,10 +447,10 @@ class SocialOverlay:
             row_draw_rect = row_rect.translate(dx=(1.0 - panel_progress) * 18.0 * density)
             draw_surface(commands, theme, row_draw_rect, role="section", radius=9.0 * density, alpha=(0.38 + (0.14 if hovered else 0.0)) * panel_progress, border_width=0.0)
             dot_color = colors.success if user.online else colors.text_muted
-            dot_y = row_draw_rect.y + (12.0 if not has_status else 10.0) * density
+            dot_y = row_draw_rect.y + 12.0 * density
             commands.panel(Rect(row_draw_rect.x + 10.0 * density, dot_y, 8.0 * density, 8.0 * density), radius=4.0 * density, color=(dot_color[0], dot_color[1], dot_color[2], 0.95 * panel_progress), border_color=(0.0, 0.0, 0.0, 0.0), border_width=0.0)
             nickname = self.app.text.truncate(user.nickname, layout.tokens.typography.body_s, row_draw_rect.w - 88.0 * density)
-            name_y = row_draw_rect.y + (6.0 if has_status else 8.0) * density
+            name_y = row_draw_rect.y + 6.0 * density
             commands.text(nickname, row_draw_rect.x + 26.0 * density, name_y, layout.tokens.typography.body_s, color=colors.text_primary if user.online else colors.text_secondary, alpha=0.94 * panel_progress)
             suffix = "Friend" if user.is_friend else ("Blocked" if user.is_blocked else "")
             if suffix:

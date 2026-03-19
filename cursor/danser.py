@@ -649,13 +649,13 @@ def _refine_waypoints(
 class DanserPlaystyle(CursorPlaystyle):
     """Sparse, flowing cursor path using a global spline."""
 
-    def __init__(self, beatmap, render_data: RenderData):
+    def __init__(self, beatmap, render_data: RenderData, *, hr_flip: bool = False):
         self._times = np.array([], dtype=np.float64)
         self._positions = np.zeros((0, 2), dtype=np.float64)
         self._debug_waypoints: list[dict[str, object]] = []
         self._debug_constraints: list[dict[str, object]] = []
         self._debug_radius_errors: list[dict[str, object]] = []
-        self._build(beatmap, render_data)
+        self._build(beatmap, render_data, hr_flip=hr_flip)
 
     def position_at(self, time_ms: float) -> tuple[float, float]:
         n = len(self._times)
@@ -677,7 +677,7 @@ class DanserPlaystyle(CursorPlaystyle):
         p = _soft_clip_point(p)
         return float(p[0]), float(p[1])
 
-    def _build(self, beatmap, rd: RenderData):
+    def _build(self, beatmap, rd: RenderData, *, hr_flip: bool = False):
         from osupyparser.osu.objects import Slider, Spinner
 
         srd = rd.slider
@@ -692,7 +692,13 @@ class DanserPlaystyle(CursorPlaystyle):
         first_time: float | None = None
 
         for obj_idx, obj in enumerate(beatmap.hit_objects):
-            pos = np.array([float(obj.pos.x), OSU_H - float(obj.pos.y)], dtype=np.float64)
+            pos = np.array(
+                [
+                    float(obj.pos.x),
+                    float(obj.pos.y) if hr_flip else OSU_H - float(obj.pos.y),
+                ],
+                dtype=np.float64,
+            )
             support_pos = _support_anchor_pos(pos, float(rd.circle_radius))
             t = float(obj.start_time)
             if first_time is None:
