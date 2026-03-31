@@ -83,7 +83,8 @@ class AudioEngine:
                  volume: float = 1.0,
                  muted: bool = False):
         _configure_pydub_binaries()
-        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
         self._audio_path = audio_path
         self._base_speed = max(0.05, float(speed))
         self._playback_speed = 1.0

@@ -29,6 +29,7 @@ from runtime_paths import HITSOUNDS_DIR
 from scenes.base import Scene
 from skins import SKIN_REGISTRY, Skin
 from speedups import clip_trail_points, compute_slider_ball_instances
+from ui.design import draw_tooltip_immediate
 from ui.menu.layout import Rect
 
 OSU_PLAYFIELD_WIDTH = 512
@@ -430,8 +431,10 @@ class GameplayScene(Scene):
                         if not Path(replay_path).is_file():
                             continue
                         replay = ReplayData.from_file(replay_path)
+                        judged_replay = replay.with_target_mods(0)
+                        visual_replay = judged_replay
                         judge = HitJudge(
-                            beatmap.hit_objects, mod_od, radius, replay,
+                            beatmap.hit_objects, mod_od, radius, judged_replay,
                         )
                         hs_events = self._build_replay_hs_events(beatmap, render_data, judge)
                         if speed != 1.0:
@@ -444,8 +447,8 @@ class GameplayScene(Scene):
                                 name=replay.player_name or Path(replay_path).stem,
                                 source_type="replay",
                                 effective_mods=mods,
-                                replay=replay,
-                                visual_replay=replay,
+                                replay=judged_replay,
+                                visual_replay=visual_replay,
                                 cpath=None,
                                 judge=judge,
                                 score_timeline=StablePerformanceTimeline.build(
@@ -456,7 +459,7 @@ class GameplayScene(Scene):
                                     circle_radius=radius,
                                     od=mod_od,
                                     hp=_mod_hp,
-                                    replay=replay,
+                                    replay=judged_replay,
                                     judge=judge,
                                     eliminate_on_miss=self._multi_replay,
                                 ),
@@ -629,6 +632,14 @@ class GameplayScene(Scene):
             self._audio.cleanup()
             self._audio = None
         self._skin.cleanup()
+
+    def on_global_audio_settings_changed(self) -> None:
+        if self._audio is not None:
+            self._audio.set_volume(self.app.settings.music_volume)
+            self._audio.set_muted(self.app.settings.music_muted)
+        if self._hitsounds is not None:
+            self._hitsounds.set_volume(self.app.settings.sfx_volume)
+            self._hitsounds.set_muted(self.app.settings.sfx_muted)
 
     # ----------------------------------------------------------- skin
 
@@ -1189,6 +1200,14 @@ class GameplayScene(Scene):
 
     def _skin_cursor_color(self) -> tuple[float, float, float]:
         return tuple(getattr(self.app.settings, "skin_cursor_color", (1.0, 1.0, 1.0)))
+
+    def _participant_cursor_color(
+        self,
+        participant: _GameplayParticipant | None,
+    ) -> tuple[float, float, float]:
+        if participant is None or participant.source_type == "danser":
+            return self._skin_cursor_color()
+        return participant.color
 
     def _skin_cursor_radius(self) -> float:
         size = self._clamp_unit(getattr(self.app.settings, "skin_cursor_size", 0.5))
@@ -1866,7 +1885,7 @@ class GameplayScene(Scene):
             while trail and current_time_ms - trail[0][0] > TRAIL_LIFETIME_MS:
                 trail.popleft()
             self._append_trail_point(trail, current_time_ms, cx, cy)
-        color = self._skin_cursor_color()
+        color = self._participant_cursor_color(participant)
         alpha = min(1.0, intro_scale) * max(0.0, min(1.0, alpha_scale))
         cursor_radius = self._skin_cursor_radius()
 
@@ -2515,21 +2534,21 @@ class GameplayScene(Scene):
             hover_time_ms = self._timeline_hover_time_ms
             hover_text = self._format_timeline_time(hover_time_ms - self._timeline_start_ms)
             hover_progress = self._timeline_progress(hover_time_ms)
-            tooltip_w, _ = text.measure(hover_text, 13)
-            tooltip_w += 18.0
-            tooltip_h = 24.0
-            tip_x = line_x + layout["line_w"] * hover_progress - tooltip_w / 2.0
-            tip_x = max(layout["bounds_x"] + 10.0, min(layout["bounds_x"] + layout["bounds_w"] - tooltip_w - 10.0, tip_x))
-            tip_y = line_y - 30.0
-            panels.draw(
-                tip_x, tip_y, tooltip_w, tooltip_h,
-                radius=10.0,
-                color=(colors.surface_container[0], colors.surface_container[1], colors.surface_container[2], 0.82 * alpha),
-                border_color=(0.0, 0.0, 0.0, 0.0),
-                border_width=0.0,
+            draw_tooltip_immediate(
+                panels,
+                text,
+                self.app.menu_context().theme,
+                Rect(layout["bounds_x"], 0.0, layout["bounds_w"], max(1.0, line_y)),
+                anchor_x=line_x + layout["line_w"] * hover_progress,
+                anchor_y=line_y,
+                value=hover_text,
+                size=13,
+                alpha=alpha,
+                gap=10.0,
+                pad_x=18.0,
+                pad_y=4.0,
+                line_gap=2.0,
             )
-            text.draw(hover_text, tip_x + 9.0, tip_y + 2.0, 13,
-                      color=colors.text_primary, alpha=0.98 * alpha)
 
     # ----------------------------------------------------------- render
 
@@ -2690,7 +2709,7 @@ class GameplayScene(Scene):
                                     )
                                     self._trail_point_tex.use(location=0)
                                 if self.trail_prog is not None and "u_color" in self.trail_prog:
-                                    self.trail_prog["u_color"].value = self._skin_cursor_color()
+                                    self.trail_prog["u_color"].value = self._participant_cursor_color(participant)
                                     if "u_alpha_scale" in self.trail_prog:
                                         self.trail_prog["u_alpha_scale"].value = alpha
                                     if "u_current_time_ms" in self.trail_prog:

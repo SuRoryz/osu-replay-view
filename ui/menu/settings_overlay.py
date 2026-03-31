@@ -109,6 +109,10 @@ class _SettingsLayout:
     display_helper_rect: Rect
     nickname_label_rect: Rect
     nickname_rect: Rect
+    osu_status_rect: Rect
+    osu_login_rect: Rect
+    osu_refresh_rect: Rect
+    osu_logout_rect: Rect
 
 
 class SettingsOverlay:
@@ -134,6 +138,9 @@ class SettingsOverlay:
         self._skin_preview = SkinPreviewRenderer(app.ctx)
         self._color_picker_key: str | None = None
         self._color_dragging: tuple[str, int] | None = None
+        self._osu_login_hit_rect: Rect | None = None
+        self._osu_refresh_hit_rect: Rect | None = None
+        self._osu_logout_hit_rect: Rect | None = None
 
     @property
     def is_open(self) -> bool:
@@ -168,6 +175,9 @@ class SettingsOverlay:
         self._color_dragging = None
         self._nickname_focus = False
         self._slider_dragging = None
+        self._osu_login_hit_rect = None
+        self._osu_refresh_hit_rect = None
+        self._osu_logout_hit_rect = None
 
     def update(self, dt: float) -> None:
         self._open_anim.update(dt)
@@ -403,11 +413,12 @@ class SettingsOverlay:
     def handle_text(self, char: str) -> bool:
         if not (self._open and self._nickname_focus):
             return False
+        auth = self.app.official_osu_client.auth
+        if auth.linked:
+            return False
         if not char or ord(char[0]) < 32:
             return True
-        if len(self.app.settings.nickname) >= 16:
-            return True
-        self.app._set_nickname(self.app.settings.nickname + char[0])
+        self.app._set_nickname(f"{self.app.settings.nickname}{char[0]}")
         return True
 
     def handle_mouse_press(self, x: int, y: int, button: int) -> bool:
@@ -458,11 +469,24 @@ class SettingsOverlay:
             self.close()
             return True
 
+        self._nickname_focus = False
+        auth = self.app.official_osu_client.auth
         nickname_rect = self._animated_rect(layout, layout.nickname_rect, section_index=3)
-        self._nickname_focus = nickname_rect.contains(x, y)
-        if self._nickname_focus:
-            self._close_select()
-            self._color_picker_key = None
+        login_rect = self._osu_login_hit_rect or self._animated_rect(layout, layout.osu_login_rect, section_index=3)
+        refresh_rect = self._osu_refresh_hit_rect or self._animated_rect(layout, layout.osu_refresh_rect, section_index=3)
+        logout_rect = self._osu_logout_hit_rect or self._animated_rect(layout, layout.osu_logout_rect, section_index=3)
+        if not auth.linked and nickname_rect.contains(x, y):
+            self._nickname_focus = True
+            return True
+        if auth.enabled and not auth.linked and login_rect.contains(x, y):
+            self.app.official_osu_client.start_login()
+            return True
+        if auth.linked and refresh_rect.contains(x, y):
+            self.app.official_osu_client.refresh_session()
+            return True
+        if auth.linked and logout_rect.contains(x, y):
+            self.app.official_osu_client.logout()
+            return True
 
         for key_name, select in layout.selects.items():
             if self._animated_rect(layout, select.rect, section_index=1).contains(x, y):
@@ -622,9 +646,7 @@ class SettingsOverlay:
         return self._hovered_id is not None and not self._hovered_id.startswith("field:")
 
     def wants_text_cursor(self) -> bool:
-        if not self.is_visible or not self._open:
-            return False
-        return self._hovered_id is not None and self._hovered_id.startswith("field:")
+        return False
 
     def _draw_section_shell(
         self,
@@ -941,7 +963,7 @@ class SettingsOverlay:
             layout,
             section_rect,
             title="Profile",
-            subtitle="Personalize what appears in the UI.",
+            subtitle="Guest nickname or link osu! account for beatmaps search",
             alpha=alpha,
         )
         label_rect = layout.nickname_label_rect.translate(dy=offset_y)
@@ -956,7 +978,9 @@ class SettingsOverlay:
             alpha=alpha,
             tone="secondary",
         )
-        nickname = self.app.settings.nickname or "Enter nickname"
+        auth = self.app.official_osu_client.auth
+        nickname_editable = not auth.linked
+        nickname = self.app.settings.nickname or ("Enter nickname" if nickname_editable else "Linked osu username appears here")
         draw_text_field(
             commands,
             self.app.text,
@@ -964,21 +988,119 @@ class SettingsOverlay:
             nickname_rect,
             value=nickname[:16],
             placeholder=not bool(self.app.settings.nickname),
-            focused=self._nickname_focus or self._mix("field:nickname") > 0.45,
+            focused=self._nickname_focus and nickname_editable,
             size=layout.context.tokens.typography.body_m,
             density=density,
-            alpha=alpha,
+            alpha=alpha * (0.96 if nickname_editable else 0.72),
             border_width=0.0,
         )
         draw_supporting_text(
             commands,
             theme,
-            "Shown in replay labels and future player-facing views.",
+            (
+                "This nickname is used until you link an osu account."
+                if nickname_editable
+                else "Nickname is managed by your linked osu account."
+            ),
             nickname_rect.x,
             nickname_rect.bottom + 8.0 * density,
             layout.context.tokens.typography.body_s,
             alpha=alpha * 0.9,
             tone="muted",
+        )
+        offset_y += 24.0
+        status_rect = layout.osu_status_rect.translate(dy=offset_y)
+        commands.panel(
+            status_rect,
+            radius=theme.shape.corner_m,
+            color=(theme.colors.surface_container[0], theme.colors.surface_container[1], theme.colors.surface_container[2], 0.52 * alpha),
+            border_color=(0.0, 0.0, 0.0, 0.0),
+            border_width=0.0,
+        )
+        if not auth.enabled:
+            title = "Official osu OAuth is not configured"
+            subtitle = "Set OSU_OFFICIAL_CLIENT_ID / SECRET on the server to enable login."
+        elif auth.loading:
+            title = "Checking osu account..."
+            subtitle = "Waiting for the local server to finish the auth request."
+        elif auth.linked and auth.account is not None:
+            title = f"Linked as {auth.account.username}"
+            subtitle = "Search maps, install beatmaps, and download official replays."
+        elif auth.error:
+            title = "osu account login failed"
+            subtitle = auth.error
+        else:
+            title = "No osu account linked"
+            subtitle = "Login is required for official map search, downloads, and replay access."
+        draw_supporting_text(
+            commands,
+            theme,
+            "osu! connection",
+            status_rect.x + 12.0 * density,
+            status_rect.y + 4.0 * density,
+            layout.context.tokens.typography.body_s,
+            alpha=alpha,
+            tone="secondary",
+        )
+        commands.text(
+            title,
+            status_rect.x + 12.0 * density,
+            status_rect.y + 22.0 * density,
+            layout.context.tokens.typography.body_m,
+            color=theme.colors.text_primary,
+            alpha=0.94 * alpha,
+        )
+        draw_supporting_text(
+            commands,
+            theme,
+            subtitle,
+            status_rect.x + 12.0 * density,
+            status_rect.y + 43.0 * density,
+            layout.context.tokens.typography.body_s,
+            alpha=0.84 * alpha,
+            tone="muted",
+        )
+        login_rect = layout.osu_login_rect.translate(dy=offset_y)
+        refresh_rect = layout.osu_refresh_rect.translate(dy=offset_y)
+        logout_rect = layout.osu_logout_rect.translate(dy=offset_y)
+        self._osu_login_hit_rect = login_rect
+        self._osu_refresh_hit_rect = refresh_rect
+        self._osu_logout_hit_rect = logout_rect
+        draw_button(
+            commands,
+            self.app.text,
+            theme,
+            login_rect,
+            label="Login",
+            size=layout.context.tokens.typography.body_s,
+            variant="primary",
+            state=InteractionState.HOVER if self._hovered_id == "button:osu_login" else InteractionState.REST,
+            radius=layout.context.tokens.radius_s,
+            alpha=alpha * (1.0 if auth.enabled and not auth.linked else 0.50),
+        )
+        draw_button(
+            commands,
+            self.app.text,
+            theme,
+            refresh_rect,
+            label="Refresh session",
+            size=layout.context.tokens.typography.body_s,
+            variant="quiet",
+            state=InteractionState.HOVER if self._hovered_id == "button:osu_refresh" else InteractionState.REST,
+            radius=layout.context.tokens.radius_s,
+            alpha=alpha * (1.0 if auth.linked else 0.50),
+        )
+        draw_button(
+            commands,
+            self.app.text,
+            theme,
+            logout_rect,
+            label="Logout",
+            size=layout.context.tokens.typography.body_s,
+            variant="secondary",
+            state=InteractionState.HOVER if self._hovered_id == "button:osu_logout" else InteractionState.REST,
+            radius=layout.context.tokens.radius_s,
+            alpha=alpha * (1.0 if auth.linked else 0.50),
         )
 
     def _draw_gameplay_section(
@@ -1611,6 +1733,9 @@ class SettingsOverlay:
             "select:screen_mode",
             "select:resolution",
             "select:fps_limit",
+            "button:osu_login",
+            "button:osu_refresh",
+            "button:osu_logout",
         ]
         tracked.extend(f"graphics_toggle:{key}" for key, _label in _GRAPHICS_TOGGLES)
         tracked.extend(f"graphics_slider:{key}" for key, _label in _GRAPHICS_SLIDERS)
@@ -1657,11 +1782,21 @@ class SettingsOverlay:
         if layout.back_rect.contains(self._mouse_x, self._mouse_y):
             self._hovered_id = "button:back"
             return
-        if self._animated_rect(layout, layout.nickname_rect, section_index=3).contains(
-            self._mouse_x,
-            self._mouse_y,
-        ):
+        auth = self.app.official_osu_client.auth
+        if not auth.linked and self._animated_rect(layout, layout.nickname_rect, section_index=3).contains(self._mouse_x, self._mouse_y):
             self._hovered_id = "field:nickname"
+            return
+        login_rect = self._osu_login_hit_rect or self._animated_rect(layout, layout.osu_login_rect, section_index=3)
+        refresh_rect = self._osu_refresh_hit_rect or self._animated_rect(layout, layout.osu_refresh_rect, section_index=3)
+        logout_rect = self._osu_logout_hit_rect or self._animated_rect(layout, layout.osu_logout_rect, section_index=3)
+        if login_rect.contains(self._mouse_x, self._mouse_y):
+            self._hovered_id = "button:osu_login"
+            return
+        if refresh_rect.contains(self._mouse_x, self._mouse_y):
+            self._hovered_id = "button:osu_refresh"
+            return
+        if logout_rect.contains(self._mouse_x, self._mouse_y):
+            self._hovered_id = "button:osu_logout"
             return
 
         menu_geo = self._menu_geometry(layout)
@@ -2003,10 +2138,17 @@ class SettingsOverlay:
             )
         y = gameplay_section_rect.bottom + section_gap
 
-        profile_section_h = card_pad * 2.0 + title_block_h + field_h + 44.0 * density
+        profile_section_h = card_pad * 2.0 + title_block_h + field_h + 168.0 * density
         profile_section_rect = Rect(content_x, y, card_w, profile_section_h)
         nickname_label_rect = Rect(content_x + card_pad, profile_section_rect.y + card_pad + title_block_h, card_w, tokens.typography.body_s)
         nickname_rect = Rect(content_x + card_pad, nickname_label_rect.bottom + 6.0 * density, card_w - card_pad * 2.0, field_h)
+        osu_status_rect = Rect(content_x + card_pad, nickname_rect.bottom + 22.0 * density, card_w - card_pad * 2.0, 74.0 * density)
+        action_y = osu_status_rect.bottom + 12.0 * density
+        action_gap = 8.0 * density
+        action_w = (card_w - card_pad * 2.0 - action_gap * 2.0) / 3.0
+        osu_login_rect = Rect(content_x + card_pad, action_y, action_w, 32.0 * density)
+        osu_refresh_rect = Rect(osu_login_rect.right + action_gap, action_y, action_w, 32.0 * density)
+        osu_logout_rect = Rect(osu_refresh_rect.right + action_gap, action_y, action_w, 32.0 * density)
         y = profile_section_rect.bottom + section_gap
 
         skin_controls_x = content_x + card_pad
@@ -2145,6 +2287,10 @@ class SettingsOverlay:
             display_helper_rect=display_helper_rect,
             nickname_label_rect=nickname_label_rect,
             nickname_rect=nickname_rect,
+            osu_status_rect=osu_status_rect,
+            osu_login_rect=osu_login_rect,
+            osu_refresh_rect=osu_refresh_rect,
+            osu_logout_rect=osu_logout_rect,
         )
         self._layout = layout
         self._layout_key = key

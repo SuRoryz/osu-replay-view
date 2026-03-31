@@ -30,10 +30,21 @@ services:
       OSU_SERVER_DB_HOST: db
       OSU_SERVER_DB_PORT: 5432
       OSU_SERVER_STORAGE: /data/replays
+      OSU_SERVER_OSU_AUTH_STORAGE: /data/osu_auth
+      OSU_OFFICIAL_CLIENT_ID: ${OSU_OFFICIAL_CLIENT_ID:-}
+      OSU_OFFICIAL_CLIENT_SECRET: ${OSU_OFFICIAL_CLIENT_SECRET:-}
+      OSU_OFFICIAL_REDIRECT_URI: ${OSU_OFFICIAL_REDIRECT_URI:-http://127.0.0.1:8000/osu/auth/callback}
+      OSU_OFFICIAL_API_BASE_URL: ${OSU_OFFICIAL_API_BASE_URL:-https://osu.ppy.sh/api/v2}
+      OSU_OFFICIAL_AUTHORIZE_URL: ${OSU_OFFICIAL_AUTHORIZE_URL:-https://osu.ppy.sh/oauth/authorize}
+      OSU_OFFICIAL_TOKEN_URL: ${OSU_OFFICIAL_TOKEN_URL:-https://osu.ppy.sh/oauth/token}
+      OSU_OFFICIAL_SCOPES: ${OSU_OFFICIAL_SCOPES:-public identify}
+      OSU_MIRROR_DOWNLOAD_TEMPLATES: ${OSU_MIRROR_DOWNLOAD_TEMPLATES:-https://api.chimu.moe/v1/download/{beatmapset_id},https://osu.direct/d/{beatmapset_id}}
+      OSU_MIRROR_TIMEOUT_SECONDS: ${OSU_MIRROR_TIMEOUT_SECONDS:-60}
     ports:
       - "${OSU_SERVER_PORT:-8000}:8000"
     volumes:
       - ./storage/replays:/data/replays
+      - ./storage/osu_auth:/data/osu_auth
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
       interval: 5s

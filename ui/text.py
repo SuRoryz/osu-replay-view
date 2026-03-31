@@ -177,6 +177,8 @@ class TextRenderer:
                 g = atlas.glyphs.get(ord(ch))
                 if g:
                     w += g.advance * scale
+                else:
+                    w += float(size) * 0.5
             result = (w, size)
         self._measure_cache[key] = result
         return result

@@ -12,17 +12,31 @@ _HIT_TYPES = ("normal", "whistle", "finish", "clap")
 MAX_CHANNELS = 48
 
 
+def _ensure_mixer() -> bool:
+    try:
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+    except Exception:
+        return False
+    return bool(pygame.mixer.get_init())
+
+
 class HitsoundManager:
     """Loads hitsound files from a directory.  No files = no sounds."""
 
     def __init__(self, hitsound_dir: str | Path | None = None,
                  volume: float = 1.0,
                  muted: bool = False):
-        pygame.mixer.set_num_channels(MAX_CHANNELS)
+        self._mixer_ready = _ensure_mixer()
+        if self._mixer_ready:
+            try:
+                pygame.mixer.set_num_channels(MAX_CHANNELS)
+            except Exception:
+                self._mixer_ready = False
         self._volume = max(0.0, min(float(volume), 1.0))
         self._muted = bool(muted)
         self._sounds: dict[str, pygame.mixer.Sound] = {}
-        if hitsound_dir is not None:
+        if self._mixer_ready and hitsound_dir is not None:
             self._load(Path(hitsound_dir))
 
     def _effective_volume(self) -> float:
@@ -37,6 +51,8 @@ class HitsoundManager:
         self._muted = bool(muted)
 
     def play(self, normal_set: str, addition_set: str, sound_enum: int, volume: float) -> None:
+        if not self._mixer_ready:
+            return
         vol = max(0.0, min(volume, 1.0)) * self._effective_volume()
         if vol <= 0.0:
             return

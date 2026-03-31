@@ -352,6 +352,22 @@ class SocialClient:
             replay = self._find_replay_by_id(replay_id)
             if replay is None or replay.is_downloading:
                 return
+            existing_path = self._existing_download_path_for_replay(replay_id, target_dir)
+            if existing_path:
+                replay.local_path = existing_path
+                replay.is_downloaded = True
+                replay.is_downloading = False
+                replay.download_progress = 1.0
+                replay.status_text = "Downloaded"
+                self.local_state.remember_download(replay_id, existing_path)
+                self._notify_download_event(
+                    "finished",
+                    replay_id=replay_id,
+                    progress=1.0,
+                    replay=replay,
+                    local_path=existing_path,
+                )
+                return
             replay.is_downloading = True
             replay.download_progress = 0.0
             replay.status_text = "Downloading..."
@@ -389,6 +405,19 @@ class SocialClient:
             return replay_id, local_path
 
         self._spawn(f"download:{replay_id}", worker)
+
+    def _existing_download_path_for_replay(self, replay_id: str, target_dir: str) -> str | None:
+        remembered = self.local_state.replay_downloads.get(replay_id)
+        if remembered and Path(remembered).is_file():
+            return remembered
+        root = Path(target_dir)
+        if not root.is_dir():
+            return None
+        suffix = f"[{replay_id[:8]}].osr"
+        for path in root.glob("*.osr"):
+            if path.name.endswith(suffix):
+                return str(path)
+        return None
 
     def delete_downloaded_replay(self, replay_id: str) -> None:
         replay = self._find_replay_by_id(replay_id)
