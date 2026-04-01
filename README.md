@@ -124,13 +124,6 @@ Official osu OAuth session state is stored under `server/storage/osu_auth`.
 
 Client social-server config comes from the repo root `.env` file via `OSU_REPLAY_SERVER_URL`.
 
-Examples:
-
-- Local Docker on your own PC: `http://127.0.0.1:8000/osu/auth/callback`
-- Remote server behind a domain: `https://your-domain.example/osu/auth/callback`
-
-If the client app connects to a remote Docker server, use the public URL of that server, not `127.0.0.1`.
-
 ## Building a Windows release
 
 The Windows packaging script builds native speedups when possible, bundles FFmpeg, and produces a clean release folder under `dist/ship`.
