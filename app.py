@@ -15,6 +15,7 @@ import moderngl_window as mglw
 import pyglet
 
 from build_version import get_display_version
+from official_osu import OfficialOsuClient
 from osu_map.scanner import BeatmapScanner
 from runtime_paths import APP_ICON_PATH, APP_ROOT, MAPS_DIR, SETTINGS_PATH, ensure_runtime_dirs
 from skins import SKIN_REGISTRY
@@ -24,7 +25,7 @@ from social.models import ChatMessagePayload, SharedReplay
 from ui.alert_overlay import AlertOverlay
 from ui.background import BackgroundRenderer
 from ui.elements import PanelRenderer
-from ui.menu import SettingsOverlay, SocialOverlay, build_layout_context
+from ui.menu import OsuMapBrowserOverlay, SettingsOverlay, SocialOverlay, build_layout_context
 from ui.text import TextRenderer
 
 
@@ -86,6 +87,7 @@ class AppSettings:
     gameplay_background_image: bool = False
     gameplay_background_dim: float = 0.65
     gameplay_cursor_trail: bool = True
+    multireplay_remove_player_on_first_miss: bool = True
     gameplay_cursor_trail_max_len: int = 256
     gameplay_circle_bloom: float = 0.50
     skin_circle_fill_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.circle_fill_color
@@ -149,6 +151,12 @@ class AppSettings:
             gameplay_background_image=bool(data.get("gameplay_background_image", defaults.gameplay_background_image)),
             gameplay_background_dim=_clamp01(data.get("gameplay_background_dim", defaults.gameplay_background_dim)),
             gameplay_cursor_trail=bool(data.get("gameplay_cursor_trail", defaults.gameplay_cursor_trail)),
+            multireplay_remove_player_on_first_miss=bool(
+                data.get(
+                    "multireplay_remove_player_on_first_miss",
+                    defaults.multireplay_remove_player_on_first_miss,
+                )
+            ),
             gameplay_cursor_trail_max_len=max(8, min(256, int(data.get("gameplay_cursor_trail_max_len", defaults.gameplay_cursor_trail_max_len)))),
             gameplay_circle_bloom=_clamp01(data.get("gameplay_circle_bloom", defaults.gameplay_circle_bloom)),
             skin_circle_fill_color=_clamp_rgb(data.get("skin_circle_fill_color", defaults.skin_circle_fill_color), defaults.skin_circle_fill_color),
@@ -220,6 +228,10 @@ class App(mglw.WindowConfig):
         self._settings_button_visible = False
         self._mouse_cursor_style = "default"
         self._last_frame_limit_tick: float | None = None
+        self._map_scan_thread: threading.Thread | None = None
+        self._map_library_revision: int = 0
+        self._map_checksum_index_revision: int = -1
+        self._map_checksum_to_dir: dict[str, str] = {}
         self._windowed_size = (
             int(self.settings.resolution_width),
             int(self.settings.resolution_height),
@@ -229,14 +241,18 @@ class App(mglw.WindowConfig):
         self.panels = PanelRenderer(self.ctx)
         self.backgrounds = BackgroundRenderer(self.ctx)
         self.scanner = BeatmapScanner(str(MAPS_DIR), scan_immediately=False)
-        scan_thread = threading.Thread(target=self.scanner.scan, daemon=True)
-        scan_thread.start()
+        self._start_map_scan()
 
         w, h = self.wnd.buffer_size
         self.text.set_projection(w, h)
         self.panels.set_projection(w, h)
         self.backgrounds.set_projection(w, h)
         self.social_client = SocialClient()
+        self.official_osu_client = OfficialOsuClient(
+            base_url=self.social_client.base_url,
+            player_uuid=self.social_client.player_uuid,
+        )
+        self.osu_map_browser_overlay = OsuMapBrowserOverlay(self)
         self.social_overlay = SocialOverlay(self, self.social_client)
         self.settings_overlay = SettingsOverlay(self)
         self.alert_overlay = AlertOverlay(self)
@@ -244,6 +260,8 @@ class App(mglw.WindowConfig):
         self.social_client.command_context_provider = self._social_command_context
         self.social_client.chat_payload_handler = self._handle_chat_message_payload
         self.social_client.download_event_handler = self._handle_download_event
+        self.official_osu_client.event_handler = self._handle_official_osu_event
+        self.official_osu_client.refresh_auth_status()
         from scenes.song_select import SongSelectScene
         self._scene = SongSelectScene(self)
         self._scene.on_enter()
@@ -288,10 +306,13 @@ class App(mglw.WindowConfig):
         if self._pending_framebuffer_sync or current_buffer_size != self._last_buffer_size:
             self._sync_framebuffer_state()
         self.ctx.scissor = None
+        self.official_osu_client.update()
+        self._sync_official_nickname()
         self.social_client.update(self.settings.nickname, self._social_presence_status_text())
         self._update_shared_replay_batch()
         self.alert_overlay.update(frametime)
         self._scene.on_render(time, frametime)
+        self.osu_map_browser_overlay.draw(frametime)
         self.social_overlay.draw(frametime)
         self.settings_overlay.draw(frametime)
         self.alert_overlay.draw()
@@ -345,12 +366,16 @@ class App(mglw.WindowConfig):
     def on_key_event(self, key, action, modifiers):
         if self.settings_overlay.handle_key_event(key, action):
             return
+        if self.osu_map_browser_overlay.handle_key_event(key, action):
+            return
         if self.social_overlay.handle_key_event(key, action):
             return
         self._scene.on_key_event(key, action, modifiers)
 
     def on_unicode_char_entered(self, char: str):
         if self.settings_overlay.handle_text(char):
+            return
+        if self.osu_map_browser_overlay.handle_text(char):
             return
         if self.social_overlay.handle_text(char):
             return
@@ -359,12 +384,16 @@ class App(mglw.WindowConfig):
     def on_mouse_press_event(self, x: int, y: int, button: int):
         if self.settings_overlay.handle_mouse_press(x, y, button):
             return
+        if self.osu_map_browser_overlay.handle_mouse_press(x, y, button):
+            return
         if self.social_overlay.handle_mouse_press(x, y, button):
             return
         self._scene.on_mouse_press(x, y, button)
 
     def on_mouse_release_event(self, x: int, y: int, button: int):
         if self.settings_overlay.handle_mouse_release(button):
+            return
+        if self.osu_map_browser_overlay.handle_mouse_release(button):
             return
         if self.social_overlay.handle_mouse_release(button):
             return
@@ -373,12 +402,16 @@ class App(mglw.WindowConfig):
     def on_mouse_scroll_event(self, x_offset: float, y_offset: float):
         if self.settings_overlay.handle_scroll(y_offset):
             return
+        if self.osu_map_browser_overlay.handle_scroll(y_offset):
+            return
         if self.social_overlay.handle_scroll(y_offset):
             return
         self._scene.on_mouse_scroll(x_offset, y_offset)
 
     def on_mouse_position_event(self, x: int, y: int, dx: int, dy: int):
         if self.settings_overlay.handle_mouse_move(x, y):
+            return
+        if self.osu_map_browser_overlay.handle_mouse_move(x, y):
             return
         if self.social_overlay.handle_mouse_move(x, y):
             return
@@ -387,12 +420,16 @@ class App(mglw.WindowConfig):
     def on_mouse_drag_event(self, x: int, y: int, dx: int, dy: int):
         if self.settings_overlay.handle_mouse_move(x, y):
             return
+        if self.osu_map_browser_overlay.handle_mouse_move(x, y):
+            return
         if self.social_overlay.handle_mouse_move(x, y):
             return
         self._scene.on_mouse_move(x, y, dx, dy)
 
     def on_close(self):
         self.social_client.shutdown()
+        if self._map_scan_thread is not None and self._map_scan_thread.is_alive():
+            self._map_scan_thread.join(timeout=0.1)
         self._scene.on_leave()
 
     def _set_mouse_cursor_style(self, style: str) -> None:
@@ -426,9 +463,13 @@ class App(mglw.WindowConfig):
         style = "default"
         if self.settings_overlay.wants_text_cursor():
             style = "text"
+        elif self.osu_map_browser_overlay.wants_text_cursor():
+            style = "text"
         elif self.social_overlay.wants_text_cursor():
             style = "text"
         elif self.settings_overlay.wants_hand_cursor():
+            style = "hand"
+        elif self.osu_map_browser_overlay.wants_hand_cursor():
             style = "hand"
         elif self.social_overlay.wants_hand_cursor():
             style = "hand"
@@ -441,6 +482,89 @@ class App(mglw.WindowConfig):
     def _social_command_context(self):
         if hasattr(self._scene, "build_chat_share"):
             return self._scene
+        return None
+
+    def _sync_official_nickname(self) -> None:
+        auth = self.official_osu_client.auth
+        if not auth.linked or auth.account is None or not auth.account.username:
+            return
+        if self.settings.nickname != auth.account.username:
+            self._set_nickname(auth.account.username)
+
+    def _handle_official_osu_event(self, event_type: str, payload: dict) -> None:
+        def _friendly_error_text(value: object, fallback: str) -> str:
+            text = str(value or "").strip()
+            if not text:
+                return fallback
+            if " for url:" in text:
+                text = text.split(" for url:", 1)[0].strip()
+            return text[:140]
+
+        if event_type == "auth_linked":
+            account = payload.get("account")
+            username = getattr(account, "username", "") if account is not None else ""
+            if username:
+                self._set_nickname(username)
+                self.alert_overlay.show_message(f"Linked osu account: {username}")
+        elif event_type == "auth_unlinked":
+            self._set_nickname("")
+            self.alert_overlay.show_message("Logged out from osu account.")
+        elif event_type == "auth_browser_opened":
+            self.alert_overlay.show_message("Opened osu login in browser.")
+        elif event_type == "map_download_finished":
+            self.alert_overlay.hide_progress()
+            self.alert_overlay.show_message("Beatmap installed.")
+            self.rescan_maps()
+        elif event_type == "map_download_progress":
+            item = payload.get("item")
+            title = getattr(item, "title", "Beatmap")
+            self.alert_overlay.show_progress(f"Downloading {title}", float(payload.get("progress") or 0.0))
+        elif event_type == "map_download_failed":
+            self.alert_overlay.hide_progress()
+            self.alert_overlay.show_message("Beatmap download failed.")
+        elif event_type == "score_download_started":
+            self.alert_overlay.show_progress("Downloading official replay", float(payload.get("progress") or 0.0))
+        elif event_type == "score_download_progress":
+            self.alert_overlay.show_progress("Downloading official replay", float(payload.get("progress") or 0.0))
+        elif event_type == "score_download_finished":
+            self.alert_overlay.hide_progress()
+            self.alert_overlay.show_message("Official replay downloaded.")
+        elif event_type == "score_download_failed":
+            self.alert_overlay.hide_progress()
+            reason = _friendly_error_text(payload.get("error"), "Unknown error")
+            self.alert_overlay.show_message(f"Official replay download failed: {reason}", ttl=3.0)
+
+    def _start_map_scan(self) -> None:
+        if self._map_scan_thread is not None and self._map_scan_thread.is_alive():
+            return
+
+        def _worker() -> None:
+            self.scanner.scan()
+            self._map_library_revision += 1
+
+        self._map_scan_thread = threading.Thread(target=_worker, daemon=True)
+        self._map_scan_thread.start()
+
+    def rescan_maps(self) -> None:
+        self._start_map_scan()
+
+    def installed_beatmap_dir_for_checksums(self, checksums: list[str] | tuple[str, ...]) -> str | None:
+        if self._map_checksum_index_revision != self._map_library_revision:
+            index: dict[str, str] = {}
+            for beatmap_set in self.scanner.sets:
+                for beatmap in beatmap_set.maps:
+                    checksum = str(getattr(beatmap, "beatmap_md5", "") or "").strip()
+                    if checksum:
+                        index.setdefault(checksum, beatmap_set.directory)
+            self._map_checksum_to_dir = index
+            self._map_checksum_index_revision = self._map_library_revision
+        for checksum in checksums:
+            normalized = str(checksum or "").strip()
+            if not normalized:
+                continue
+            directory = self._map_checksum_to_dir.get(normalized)
+            if directory:
+                return directory
         return None
 
     def _social_presence_status_text(self) -> str:
@@ -831,6 +955,12 @@ class App(mglw.WindowConfig):
 
     def close_settings(self) -> None:
         self.settings_overlay.close()
+
+    def toggle_osu_map_browser(self) -> None:
+        self.osu_map_browser_overlay.toggle()
+
+    def close_osu_map_browser(self) -> None:
+        self.osu_map_browser_overlay.close()
 
     def set_settings_button(
         self,

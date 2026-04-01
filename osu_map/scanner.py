@@ -39,6 +39,8 @@ class BeatmapInfo:
 class BeatmapSet:
     directory: str
     maps: list[BeatmapInfo] = field(default_factory=list)
+    _background_path_cache: str | None = field(default=None, init=False, repr=False)
+    _background_path_resolved: bool = field(default=False, init=False, repr=False)
 
     @property
     def display_title(self) -> str:
@@ -64,13 +66,19 @@ class BeatmapSet:
 
     @property
     def background_path(self) -> str | None:
+        if self._background_path_resolved:
+            return self._background_path_cache
         if not self.maps:
+            self._background_path_resolved = True
             return None
         m = self.maps[0]
         if not m.background_file:
+            self._background_path_resolved = True
             return None
         p = Path(m.directory) / m.background_file
-        return str(p) if p.is_file() else None
+        self._background_path_cache = str(p) if p.is_file() else None
+        self._background_path_resolved = True
+        return self._background_path_cache
 
     @property
     def audio_path(self) -> str | None:

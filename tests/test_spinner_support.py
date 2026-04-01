@@ -88,3 +88,39 @@ def test_spinner_auto_timeline_includes_stable_bonus_score() -> None:
     assert final_point.n300 == 1
     assert final_point.combo == 1
     assert final_point.score == 11800
+
+
+def test_eliminate_on_miss_stops_timeline_after_first_miss() -> None:
+    beatmap = _SpinnerBeatmap([_spinner(0, 2000), _spinner(3000, 5000)], od=5.0)
+    replay = _spinner_replay(start_ms=0, end_ms=2000, spins_per_second=0.0)
+    judge = HitJudge(beatmap.hit_objects, od=5.0, circle_radius=36.48, replay=replay)
+
+    full_timeline = StablePerformanceTimeline.build(
+        beatmap=beatmap,
+        beatmap_path="missing.osu",
+        mods=0,
+        clock_rate=1.0,
+        circle_radius=36.48,
+        od=5.0,
+        hp=5.0,
+        replay=replay,
+        judge=judge,
+        eliminate_on_miss=False,
+    )
+    eliminated_timeline = StablePerformanceTimeline.build(
+        beatmap=beatmap,
+        beatmap_path="missing.osu",
+        mods=0,
+        clock_rate=1.0,
+        circle_radius=36.48,
+        od=5.0,
+        hp=5.0,
+        replay=replay,
+        judge=judge,
+        eliminate_on_miss=True,
+    )
+
+    assert full_timeline.points[-1].misses == 2
+    assert full_timeline.points[-1].eliminated is False
+    assert eliminated_timeline.points[-1].misses == 1
+    assert eliminated_timeline.points[-1].eliminated is True

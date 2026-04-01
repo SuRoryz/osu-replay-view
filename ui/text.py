@@ -50,6 +50,8 @@ _GLYPH_RANGE = range(32, 127)
 _ATLAS_PADDING = 2
 MAX_QUADS = 4096
 MAX_LAYOUT_CACHE = 4096
+MAX_MEASURE_CACHE = 8192
+MAX_TRUNCATE_CACHE = 8192
 
 
 def _find_font(size: int) -> ImageFont.FreeTypeFont:
@@ -144,7 +146,7 @@ class TextRenderer:
         self._projection = np.eye(4, dtype="f4")
         self._projection_bytes = self._projection.tobytes()
         self._measure_cache: dict[tuple[str, int], tuple[float, float]] = {}
-        self._truncate_cache: dict[tuple[str, int, int], str] = {}
+        self._truncate_cache: dict[tuple[str, int, int], tuple[str, float]] = {}
         self._layout_cache: dict[tuple[str, int], tuple[int, np.ndarray]] = {}
         self._styled_layout_cache: dict[tuple[str, int, float, float, float, float], tuple[int, np.ndarray]] = {}
         self._batch_bufs: dict[int, np.ndarray] = {}
@@ -168,7 +170,9 @@ class TextRenderer:
         key = (text, size)
         cached = self._measure_cache.get(key)
         if cached is not None:
+            profiler.count("text.measure.cache_hits")
             return cached
+        profiler.count("text.measure.cache_misses")
         with profiler.timer("text.measure"):
             atlas = self._atlases[self._closest_size(size)]
             scale = size / atlas.line_height
@@ -177,40 +181,63 @@ class TextRenderer:
                 g = atlas.glyphs.get(ord(ch))
                 if g:
                     w += g.advance * scale
+                else:
+                    w += float(size) * 0.5
             result = (w, size)
         self._measure_cache[key] = result
+        if len(self._measure_cache) > MAX_MEASURE_CACHE:
+            self._measure_cache.pop(next(iter(self._measure_cache)))
         return result
 
     def truncate(self, value: str, size: int, max_width: float) -> str:
+        return self.truncate_with_width(value, size, max_width)[0]
+
+    def truncate_with_width(self, value: str, size: int, max_width: float) -> tuple[str, float]:
         if max_width <= 0:
-            return ""
+            return ("", 0.0)
         width_px = int(max_width)
         cache_key = (value, size, width_px)
         cached = self._truncate_cache.get(cache_key)
         if cached is not None:
+            profiler.count("text.truncate.cache_hits")
             return cached
-        if self.measure(value, size)[0] <= max_width:
-            self._truncate_cache[cache_key] = value
-            return value
+        profiler.count("text.truncate.cache_misses")
+        full_width, _ = self.measure(value, size)
+        if full_width <= max_width:
+            result = (value, full_width)
+            self._truncate_cache[cache_key] = result
+            if len(self._truncate_cache) > MAX_TRUNCATE_CACHE:
+                self._truncate_cache.pop(next(iter(self._truncate_cache)))
+            return result
 
         ellipsis = "..."
-        if self.measure(ellipsis, size)[0] > max_width:
-            self._truncate_cache[cache_key] = ellipsis
-            return ellipsis
+        ellipsis_width, _ = self.measure(ellipsis, size)
+        if ellipsis_width > max_width:
+            result = (ellipsis, ellipsis_width)
+            self._truncate_cache[cache_key] = result
+            if len(self._truncate_cache) > MAX_TRUNCATE_CACHE:
+                self._truncate_cache.pop(next(iter(self._truncate_cache)))
+            return result
 
         lo = 0
         hi = len(value)
         best = ellipsis
+        best_width = ellipsis_width
         while lo <= hi:
             mid = (lo + hi) // 2
             candidate = value[:mid].rstrip() + ellipsis
-            if self.measure(candidate, size)[0] <= max_width:
+            candidate_width, _ = self.measure(candidate, size)
+            if candidate_width <= max_width:
                 best = candidate
+                best_width = candidate_width
                 lo = mid + 1
             else:
                 hi = mid - 1
-        self._truncate_cache[cache_key] = best
-        return best
+        result = (best, best_width)
+        self._truncate_cache[cache_key] = result
+        if len(self._truncate_cache) > MAX_TRUNCATE_CACHE:
+            self._truncate_cache.pop(next(iter(self._truncate_cache)))
+        return result
 
     def _layout_for_text(self, text: str, size: int) -> tuple[int, np.ndarray]:
         key = (text, size)

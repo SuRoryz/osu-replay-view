@@ -1,6 +1,7 @@
 from .animation import AnimatedFloat, approach, ease_in_out_cubic, ease_in_quad, ease_out_cubic
 from .commands import RenderCommandBuffer
 from .layout import Insets, LayoutContext, LayoutMode, Rect, build_layout_context
+from .osu_map_browser_overlay import OsuMapBrowserOverlay
 from .settings_overlay import SettingsOverlay
 from .social_overlay import SocialOverlay
 
@@ -16,6 +17,7 @@ __all__ = [
     "LayoutMode",
     "Rect",
     "build_layout_context",
+    "OsuMapBrowserOverlay",
     "SettingsOverlay",
     "SocialOverlay",
 ]

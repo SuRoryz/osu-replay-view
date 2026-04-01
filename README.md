@@ -94,6 +94,10 @@ Useful environment variables:
 - `OSU_SERVER_DB_NAME`
 - `OSU_SERVER_STORAGE`
 - `OSU_SERVER_CORS`
+- `OSU_OFFICIAL_CLIENT_ID`
+- `OSU_OFFICIAL_CLIENT_SECRET`
+- `OSU_OFFICIAL_REDIRECT_URI`
+- `OSU_OFFICIAL_SCOPES`
 
 ### Docker deployment
 
@@ -116,6 +120,7 @@ docker compose up -d --build
 ```
 
 By default the API is published on port `8000`, replay files are stored under `server/storage/replays`, and PostgreSQL data is stored in the `postgres_data` Docker volume.
+Official osu OAuth session state is stored under `server/storage/osu_auth`.
 
 Client social-server config comes from the repo root `.env` file via `OSU_REPLAY_SERVER_URL`.
 

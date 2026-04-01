@@ -51,6 +51,12 @@ POSTGRES_DB=osu_replay_v2
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 OSU_SERVER_CORS=*
+OSU_OFFICIAL_CLIENT_ID=
+OSU_OFFICIAL_CLIENT_SECRET=
+OSU_OFFICIAL_REDIRECT_URI=http://127.0.0.1:8000/osu/auth/callback
+OSU_OFFICIAL_SCOPES=public identify
+OSU_MIRROR_DOWNLOAD_TEMPLATES=https://api.chimu.moe/v1/download/{beatmapset_id},https://osu.direct/d/{beatmapset_id}
+OSU_MIRROR_TIMEOUT_SECONDS=60
 EOF
     echo "[deploy] Created default .env file at $ENV_FILE"
 }

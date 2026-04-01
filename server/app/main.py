@@ -4,19 +4,31 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
 from collections import defaultdict
 from pathlib import Path
 
 from fastapi.encoders import jsonable_encoder
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy import delete, select
 
 from .chat_commands import dm_channel_name, normalize_channel_name
 from .config import Settings
 from .db import init_db, session_scope, build_session_factory
+from .map_mirrors import MirrorResolver, MirrorResolverError
 from .models import BlockEdge, Channel, ChannelMembership, FriendEdge, Message, Player, Replay, ReplayUploadEvent, utcnow
+from .osu_auth import OsuAuthStore
+from .osu_client import OsuApiClient, OsuApiError
+from .osu_schemas import (
+    OsuAccountResponse,
+    OsuAuthStartResponse,
+    OsuAuthStatusResponse,
+    OsuBeatmapLookupResponse,
+    OsuBeatmapsetSearchResponse,
+    OsuOfficialScoreResponse,
+)
 from .schemas import (
     ChannelCreateRequest,
     ChannelResponse,
@@ -84,7 +96,11 @@ class ConnectionManager:
 settings = Settings.load()
 engine, SessionLocal = build_session_factory(settings)
 settings.storage_root.mkdir(parents=True, exist_ok=True)
+settings.osu_auth_root.mkdir(parents=True, exist_ok=True)
 init_db(engine)
+osu_auth_store = OsuAuthStore(settings.osu_auth_root)
+osu_api_client = OsuApiClient(settings, osu_auth_store)
+mirror_resolver = MirrorResolver(settings)
 
 app = FastAPI(title="osu replay social server", version="0.1.0")
 app.add_middleware(
@@ -95,6 +111,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.state.manager = ConnectionManager()
+_REPLAYFILE_PARSE_LOCK = threading.Lock()
 
 
 @app.on_event("startup")
@@ -156,6 +173,35 @@ def message_to_schema(message: Message) -> MessageResponse:
 
 def normalize_beatmap_id(value: int) -> int:
     return int(value) & 0x7FFFFFFF
+
+
+def _official_status(player_uuid: str) -> OsuAuthStatusResponse:
+    if not osu_api_client.enabled:
+        return OsuAuthStatusResponse(linked=False, enabled=False, scopes=[])
+    session = osu_auth_store.load_session(player_uuid)
+    if session is None:
+        return OsuAuthStatusResponse(linked=False, enabled=True, scopes=list(settings.osu_oauth_scopes))
+    try:
+        session = osu_api_client.current_session(player_uuid, refresh_if_needed=True)
+    except OsuApiError:
+        osu_auth_store.clear_session(player_uuid)
+        return OsuAuthStatusResponse(linked=False, enabled=True, scopes=list(settings.osu_oauth_scopes))
+    identity = session.identity or osu_api_client.fetch_me(session)
+    session.identity = identity
+    osu_auth_store.save_session(player_uuid, session)
+    return OsuAuthStatusResponse(
+        linked=True,
+        enabled=True,
+        scopes=list(session.scopes or settings.osu_oauth_scopes),
+        expires_at=session.expires_at,
+        account=OsuAccountResponse(
+            user_id=identity.user_id,
+            username=identity.username,
+            avatar_url=identity.avatar_url,
+            country_code=identity.country_code,
+            cover_url=identity.cover_url,
+        ),
+    )
 
 
 def presence_snapshot(session) -> list[PlayerPresenceResponse]:
@@ -221,6 +267,152 @@ def ensure_membership(session, channel_id: str, player_uuid: str) -> None:
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
+
+
+@app.get("/osu/auth/status", response_model=OsuAuthStatusResponse)
+def osu_auth_status(player_uuid: str = Query(...)):
+    return _official_status(player_uuid)
+
+
+@app.post("/osu/auth/start", response_model=OsuAuthStartResponse)
+def osu_auth_start(player_uuid: str = Query(...)):
+    try:
+        auth_url, state = osu_api_client.build_authorize_url(player_uuid)
+    except OsuApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return OsuAuthStartResponse(auth_url=auth_url, state=state)
+
+
+@app.get("/osu/auth/callback", response_class=HTMLResponse)
+def osu_auth_callback(
+    code: str = Query(""),
+    state: str = Query(""),
+    error: str = Query(""),
+    error_description: str = Query(""),
+):
+    if error:
+        message = error_description or error
+        return HTMLResponse(f"<h2>osu login failed</h2><p>{message}</p>", status_code=400)
+    if not code or not state:
+        return HTMLResponse("<h2>osu login failed</h2><p>Missing OAuth code or state.</p>", status_code=400)
+    player_uuid = osu_auth_store.consume_state(state)
+    if not player_uuid:
+        return HTMLResponse("<h2>osu login failed</h2><p>This login session expired. Start login again from the client.</p>", status_code=400)
+    try:
+        session = osu_api_client.exchange_code(code)
+    except OsuApiError as exc:
+        return HTMLResponse(f"<h2>osu login failed</h2><p>{exc.detail}</p>", status_code=exc.status_code)
+    osu_auth_store.save_session(player_uuid, session)
+    return HTMLResponse(
+        "<h2>osu account linked</h2><p>You can close this tab.</p>",
+        status_code=200,
+    )
+
+
+@app.post("/osu/auth/refresh", response_model=OsuAuthStatusResponse)
+def osu_auth_refresh(player_uuid: str = Query(...)):
+    session = osu_auth_store.load_session(player_uuid)
+    if session is None:
+        raise HTTPException(status_code=404, detail="No linked osu account found.")
+    try:
+        refreshed = osu_api_client.refresh_session(session)
+    except OsuApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    osu_auth_store.save_session(player_uuid, refreshed)
+    return _official_status(player_uuid)
+
+
+@app.post("/osu/auth/logout")
+def osu_auth_logout(player_uuid: str = Query(...)):
+    osu_auth_store.clear_session(player_uuid)
+    return {"ok": True}
+
+
+@app.get("/osu/beatmapsets/search", response_model=OsuBeatmapsetSearchResponse)
+def osu_search_beatmapsets(
+    player_uuid: str = Query(...),
+    query: str = Query(""),
+    cursor_string: str = Query(""),
+    status: str = Query(""),
+    mode: str = Query("osu"),
+):
+    try:
+        payload = osu_api_client.search_beatmapsets(
+            player_uuid,
+            query=query,
+            cursor_string=cursor_string,
+            status=status,
+            mode=mode,
+        )
+    except OsuApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return OsuBeatmapsetSearchResponse.model_validate(payload)
+
+
+@app.get("/osu/beatmaps/lookup", response_model=OsuBeatmapLookupResponse)
+def osu_lookup_beatmap(
+    player_uuid: str = Query(...),
+    checksum: str = Query(""),
+    beatmap_id: int | None = Query(default=None),
+):
+    try:
+        payload = osu_api_client.lookup_beatmap(player_uuid, checksum=checksum, beatmap_id=beatmap_id)
+    except OsuApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return OsuBeatmapLookupResponse.model_validate(payload)
+
+
+@app.get("/osu/beatmaps/{beatmap_id}/scores", response_model=list[OsuOfficialScoreResponse])
+def osu_list_scores(
+    beatmap_id: int,
+    player_uuid: str = Query(...),
+    ruleset: str = Query("osu"),
+):
+    try:
+        payload = osu_api_client.list_scores(player_uuid, beatmap_id, ruleset=ruleset)
+    except OsuApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return [OsuOfficialScoreResponse.model_validate(item) for item in payload]
+
+
+@app.get("/osu/beatmapsets/{beatmapset_id}/download")
+def osu_download_beatmapset(beatmapset_id: int, player_uuid: str = Query(...)):
+    try:
+        response_payload = mirror_resolver.download_beatmapset(beatmapset_id)
+    except MirrorResolverError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return Response(
+        content=response_payload.payload,
+        media_type=response_payload.content_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{response_payload.filename}"',
+        },
+    )
+
+
+@app.get("/osu/scores/{score_id}/download")
+def osu_download_score(
+    score_id: int,
+    player_uuid: str = Query(...),
+    ruleset: str = Query("osu"),
+    legacy_score_id: int | None = Query(default=None),
+):
+    try:
+        response_payload = osu_api_client.download_score(
+            player_uuid,
+            score_id,
+            ruleset=ruleset,
+            legacy_score_id=legacy_score_id,
+        )
+    except OsuApiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return Response(
+        content=response_payload.payload,
+        media_type=response_payload.content_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{response_payload.filename}"',
+        },
+    )
 
 
 @app.post("/session/identify", response_model=IdentifyResponse)
@@ -396,7 +588,8 @@ def _parse_replay_summary(path: str) -> dict[str, int | str]:
     try:
         from osupyparser.osr.osr_parser import ReplayFile
 
-        replay = ReplayFile.from_file(path)
+        with _REPLAYFILE_PARSE_LOCK:
+            replay = ReplayFile.from_file(path)
         return {
             "player_name": replay.player_name or "",
             "mods": int(replay.mods),

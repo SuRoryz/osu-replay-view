@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ui.design.state import InteractionState, rgba
+
+if TYPE_CHECKING:
+    from ui.menu.layout import Rect
 
 
 def draw_surface(
@@ -68,6 +73,195 @@ def draw_surface(
         border_color=rgba(border, alpha if border_width > 0.0 else 0.0),
         border_width=border_width,
     )
+
+
+def _wrap_tooltip_lines(text_renderer, value: str, size: int, max_inner_width: float) -> list[str]:
+    value = " ".join(str(value or "").split())
+    if not value:
+        return [""]
+    if max_inner_width <= 1.0:
+        return [value]
+
+    def hard_break(chunk: str) -> list[str]:
+        out: list[str] = []
+        current = ""
+        for ch in chunk:
+            trial = current + ch
+            if text_renderer.measure(trial, size)[0] <= max_inner_width:
+                current = trial
+            else:
+                if current:
+                    out.append(current)
+                current = ch
+        if current:
+            out.append(current)
+        return out if out else [chunk[:1]]
+
+    lines: list[str] = []
+    for word in value.split():
+        if not lines:
+            if text_renderer.measure(word, size)[0] <= max_inner_width:
+                lines.append(word)
+            else:
+                lines.extend(hard_break(word))
+            continue
+        trial = f"{lines[-1]} {word}"
+        if text_renderer.measure(trial, size)[0] <= max_inner_width:
+            lines[-1] = trial
+        elif text_renderer.measure(word, size)[0] <= max_inner_width:
+            lines.append(word)
+        else:
+            lines.extend(hard_break(word))
+    return lines
+
+
+def _tooltip_box(
+    text_renderer,
+    bounds_rect: Rect,
+    *,
+    anchor_x: float,
+    anchor_y: float,
+    value: str,
+    size: int,
+    ref_h: float = 0.0,
+    gap: float = 10.0,
+    pad_x: float = 18.0,
+    pad_y: float = 4.0,
+    line_gap: float = 2.0,
+    max_inner_width: float | None = None,
+) -> tuple[list[str], Rect]:
+    inner_max = max_inner_width
+    if inner_max is None:
+        inner_max = max(40.0, bounds_rect.w - 28.0 - pad_x)
+    lines = _wrap_tooltip_lines(text_renderer, value, size, inner_max)
+    tooltip_w = max((text_renderer.measure(line, size)[0] for line in lines), default=0.0) + pad_x
+    tooltip_h = len(lines) * size + max(0, len(lines) - 1) * line_gap + pad_y * 2.0
+    tip_x = anchor_x - tooltip_w * 0.5
+    left_b = bounds_rect.x + 14.0
+    right_b = bounds_rect.right - 14.0
+    tip_x = max(left_b, min(right_b - tooltip_w, tip_x))
+    tip_y = anchor_y - tooltip_h - gap
+    min_y = bounds_rect.y + 4.0
+    if tip_y < min_y:
+        tip_y = anchor_y + ref_h + gap
+    max_y = bounds_rect.bottom - tooltip_h - 4.0
+    if max_y >= min_y:
+        tip_y = max(min_y, min(max_y, tip_y))
+    else:
+        tip_y = min_y
+    rect_type = type(bounds_rect)
+    return lines, rect_type(tip_x, tip_y, tooltip_w, tooltip_h)
+
+
+def draw_tooltip(
+    commands,
+    text,
+    theme,
+    bounds_rect: Rect,
+    *,
+    anchor_x: float,
+    anchor_y: float,
+    value: str,
+    size: int,
+    ref_h: float = 0.0,
+    alpha: float = 1.0,
+    gap: float = 10.0,
+    pad_x: float = 18.0,
+    pad_y: float = 4.0,
+    line_gap: float = 2.0,
+    max_inner_width: float | None = None,
+) -> None:
+    lines, tooltip_rect = _tooltip_box(
+        text,
+        bounds_rect,
+        anchor_x=anchor_x,
+        anchor_y=anchor_y,
+        value=value,
+        size=size,
+        ref_h=ref_h,
+        gap=gap,
+        pad_x=pad_x,
+        pad_y=pad_y,
+        line_gap=line_gap,
+        max_inner_width=max_inner_width,
+    )
+    colors = theme.colors
+    commands.panel(
+        tooltip_rect,
+        radius=10.0,
+        color=(colors.surface_container[0], colors.surface_container[1], colors.surface_container[2], 0.88 * alpha),
+        border_color=(0.0, 0.0, 0.0, 0.0),
+        border_width=0.0,
+    )
+    line_step = size + line_gap
+    ty = tooltip_rect.y + pad_y - 4.0
+    for line in lines:
+        commands.text(
+            line,
+            tooltip_rect.x + pad_x * 0.5,
+            ty,
+            size,
+            color=colors.text_primary,
+            alpha=0.98 * alpha,
+        )
+        ty += line_step
+
+
+def draw_tooltip_immediate(
+    panels,
+    text,
+    theme,
+    bounds_rect: Rect,
+    *,
+    anchor_x: float,
+    anchor_y: float,
+    value: str,
+    size: int,
+    ref_h: float = 0.0,
+    alpha: float = 1.0,
+    gap: float = 10.0,
+    pad_x: float = 18.0,
+    pad_y: float = 4.0,
+    line_gap: float = 2.0,
+    max_inner_width: float | None = None,
+) -> None:
+    lines, tooltip_rect = _tooltip_box(
+        text,
+        bounds_rect,
+        anchor_x=anchor_x,
+        anchor_y=anchor_y,
+        value=value,
+        size=size,
+        ref_h=ref_h,
+        gap=gap,
+        pad_x=pad_x,
+        pad_y=pad_y,
+        line_gap=line_gap,
+        max_inner_width=max_inner_width,
+    )
+    colors = theme.colors
+    panels.draw(
+        tooltip_rect.x,
+        tooltip_rect.y,
+        tooltip_rect.w,
+        tooltip_rect.h,
+        radius=10.0,
+        color=(colors.surface_container[0], colors.surface_container[1], colors.surface_container[2], 0.88 * alpha),
+        border_color=(0.0, 0.0, 0.0, 0.0),
+        border_width=0.0,
+    )
+    line_step = size + line_gap
+    ty = tooltip_rect.y + pad_y - 4.0
+    for line in lines:
+        text.draw(
+            line,
+            tooltip_rect.x + pad_x * 0.5,
+            ty,
+            size,
+            color=colors.text_primary,
+            alpha=0.98 * alpha,
+        )
+        ty += line_step
 
 
 def draw_button(

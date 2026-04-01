@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import io
 import hashlib
 import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import moderngl
@@ -136,6 +136,8 @@ ENTER_DURATION = 0.5
 
 MOMENTUM_DECAY = 0.92
 MOMENTUM_MIN = 0.5
+PREVIEW_SELECTION_SETTLE_S = 0.025
+PREVIEW_SCROLL_SETTLE_S = 0.045
 
 
 def _ease_in_quad(t: float) -> float:
@@ -219,7 +221,7 @@ _MOD_LABELS = ["Easy", "NoFail", "HalfTime", "HardRock", "Hidden", "DoubleTime",
 class SongSelectScene(Scene):
     """osu!-style song selection screen."""
 
-    def __init__(self, app):
+    def __init__(self, app, *, initial_beatmap_md5: str | None = None):
         super().__init__(app)
         self._menu_view = SongSelectMenuView()
         self._debug_layout: bool = os.environ.get("OSU_DEBUG_LAYOUT", "").lower() in ("1", "true", "yes", "on")
@@ -252,15 +254,22 @@ class SongSelectScene(Scene):
         self._replay_local_tab_rect: tuple[float, float, float, float] | None = None
         self._replay_online_tab_rect: tuple[float, float, float, float] | None = None
         self._replay_source_tab: str = "local"
+        self._online_replay_scope_tab: str = "community"
+        self._replay_online_community_tab_rect: tuple[float, float, float, float] | None = None
+        self._replay_online_official_tab_rect: tuple[float, float, float, float] | None = None
         self._selected_online_replay_id: str | None = None
+        self._initial_beatmap_md5: str | None = str(initial_beatmap_md5 or "").strip() or None
+        self._selected_official_score_id: int | None = None
         self._replay_context_menu_rect: tuple[float, float, float, float] | None = None
         self._replay_context_menu_options: list[tuple[float, float, float, float, str]] = []
         self._replay_context_target: str | None = None
         self._replay_context_menu_anim = AnimatedFloat(0.0, 0.0, 16.0)
         self._chat_btn_rect: tuple[float, float, float, float] | None = None
+        self._map_browser_btn_rect: tuple[float, float, float, float] | None = None
         self._songs_open_btn_rect: tuple[int, int, int, int] | None = None
         self._song_list_interact_rect: object | None = None
         self._song_card_rects: list[tuple[float, float, float, float, int]] = []
+        self._map_library_revision_seen: int = int(getattr(app, "_map_library_revision", 0))
 
         # Song list scroll
         self._scroll_target: float = 0.0
@@ -298,6 +307,7 @@ class SongSelectScene(Scene):
         self._replay_entity_cache: dict[str, tuple[str, int, str] | None] = {}
         self._replay_entity_index_key: tuple[str, int | None] | None = None
         self._replay_entity_index: dict[str, str] = {}
+        self._official_score_sync_key: tuple[int, float, str, int | None] | None = None
         self._flattened_list_cache: list[tuple[int, int]] = []
         self._flattened_list_dirty: bool = True
         self._beatmap_lookup: dict[str, tuple[int, int]] = {}
@@ -307,10 +317,13 @@ class SongSelectScene(Scene):
         self._peek_mods_pending: list[tuple[int, str, ReplaySummary | None]] = []
         self._peek_mods_lock = threading.Lock()
 
-        # Deferred audio loading (avoids blocking when changing songs)
-        self._audio_load_pending: tuple[io.BytesIO, str, float] | None = None
+        # Deferred preview switching (keeps selection changes responsive)
+        self._audio_load_pending: tuple[str, float, int, float] | None = None
         self._audio_load_lock = threading.Lock()
         self._audio_load_path: str | None = None  # path we're loading (for stale check)
+        self._preview_request_id: int = 0
+        self._preview_playback_lock = threading.Lock()
+        self._current_preview_audio_path: str | None = None
         self._preview_cache_lock = threading.Lock()
         self._preview_audio_cache: dict[str, tuple[bytes, str]] = {}
         self._preview_cache_order: list[str] = []
@@ -333,8 +346,9 @@ class SongSelectScene(Scene):
         self._anim_state = "entering"
         self._anim_timer = 0.0
         if self._sets:
-            self._selected_idx = 0
-            self._selected_diff_idx = 0
+            if not self._restore_initial_selection():
+                self._selected_idx = 0
+                self._selected_diff_idx = 0
             self._center_scroll()
             self._start_preview()
 
@@ -363,59 +377,105 @@ class SongSelectScene(Scene):
                 pass
             self._mixer_inited = True
 
-    def _start_preview(self) -> None:
+    def _preview_settle_delay(self) -> float:
+        if self._dragging_songs or abs(self._song_velocity) > MOMENTUM_MIN:
+            return PREVIEW_SCROLL_SETTLE_S
+        return PREVIEW_SELECTION_SETTLE_S
+
+    def _start_preview(self, *, delay_s: float = 0.0) -> None:
         if not self._sets:
             return
         bset = self._sets[self._selected_idx]
         audio = bset.audio_path
         if audio is None or not Path(audio).is_file():
+            self._stop_preview()
             return
 
         self._ensure_mixer()
         start_sec = max(0, bset.preview_time) / 1000.0
-
-        cached = self._preview_audio_cache_get(audio)
-        if cached is not None:
-            data, namehint = cached
-            with self._audio_load_lock:
-                self._audio_load_pending = (io.BytesIO(data), namehint, start_sec)
-                self._audio_load_path = audio
-            self._prefetch_adjacent_previews()
-            return
-
-        def _audio_load_worker(preview_path: str, requested_start_sec: float) -> None:
-            try:
-                with open(preview_path, "rb") as f:
-                    data = f.read()
-                ext = Path(preview_path).suffix.lstrip(".").lower() or "ogg"
-                namehint = ext if ext in ("mp3", "ogg", "wav", "mid", "mod") else "ogg"
-                self._preview_audio_cache_store(preview_path, data, namehint)
-                with self._audio_load_lock:
-                    self._audio_load_pending = (io.BytesIO(data), namehint, requested_start_sec)
-                    self._audio_load_path = preview_path
-            except Exception:
-                pass
-            finally:
-                with self._preview_cache_lock:
-                    self._preview_loading_paths.discard(preview_path)
-
         with self._audio_load_lock:
-            self._audio_load_pending = None
-            self._audio_load_path = audio
-        with self._preview_cache_lock:
-            if audio in self._preview_loading_paths:
+            if self._preview_playing and self._current_preview_audio_path == audio and self._audio_load_path is None:
+                profiler.count("song_select.audio.preview_requests.skipped_same_track")
                 return
-            self._preview_loading_paths.add(audio)
-        threading.Thread(target=_audio_load_worker, args=(audio, start_sec), daemon=True).start()
+            self._preview_request_id += 1
+            request_id = self._preview_request_id
+            due_at = time.monotonic() + max(0.0, float(delay_s))
+            self._audio_load_pending = (audio, start_sec, request_id, due_at)
+            self._audio_load_path = audio
+            profiler.count("song_select.audio.preview_requests")
+            if delay_s > 0.0:
+                profiler.count("song_select.audio.preview_requests.delayed")
+            else:
+                profiler.count("song_select.audio.preview_requests.immediate")
         self._prefetch_adjacent_previews()
 
+        def _switch_worker(preview_path: str, requested_start_sec: float, worker_request_id: int, due_at: float) -> None:
+            wait_s = max(0.0, due_at - time.monotonic())
+            if wait_s > 0.0:
+                threading.Event().wait(wait_s)
+            with self._audio_load_lock:
+                pending = self._audio_load_pending
+                if (
+                    pending is None
+                    or pending[2] != worker_request_id
+                    or self._audio_load_path != preview_path
+                ):
+                    profiler.count("song_select.audio.preview_requests.cancelled")
+                    return
+            with profiler.timer("song_select.audio_apply_async"):
+                with self._preview_playback_lock:
+                    with self._audio_load_lock:
+                        pending = self._audio_load_pending
+                        if (
+                            pending is None
+                            or pending[2] != worker_request_id
+                            or self._audio_load_path != preview_path
+                        ):
+                            profiler.count("song_select.audio.preview_requests.cancelled")
+                            return
+                    try:
+                        target_volume = self.app.effective_music_volume
+                        with profiler.timer("song_select.audio.stop"):
+                            pygame.mixer.music.stop()
+                        with profiler.timer("song_select.audio.load"):
+                            pygame.mixer.music.load(preview_path)
+                        with profiler.timer("song_select.audio.play"):
+                            if requested_start_sec > 0.0:
+                                pygame.mixer.music.play(loops=-1, start=requested_start_sec)
+                            else:
+                                pygame.mixer.music.play(loops=-1)
+                        pygame.mixer.music.set_volume(target_volume)
+                        self._preview_playing = True
+                        self._current_preview_audio_path = preview_path
+                    except Exception:
+                        self._preview_playing = False
+                        self._current_preview_audio_path = None
+                    finally:
+                        with self._audio_load_lock:
+                            if self._preview_request_id == worker_request_id:
+                                self._audio_load_pending = None
+                                self._audio_load_path = None
+
+        threading.Thread(
+            target=_switch_worker,
+            args=(audio, start_sec, request_id, due_at),
+            daemon=True,
+            name="song-preview-switch",
+        ).start()
+
     def _stop_preview(self) -> None:
+        with self._audio_load_lock:
+            self._preview_request_id += 1
+            self._audio_load_pending = None
+            self._audio_load_path = None
         if self._preview_playing:
             try:
-                pygame.mixer.music.stop()
+                with self._preview_playback_lock:
+                    pygame.mixer.music.stop()
             except Exception:
                 pass
             self._preview_playing = False
+        self._current_preview_audio_path = None
 
     def _sound_control_value(self, key: str) -> float:
         if key == "music":
@@ -445,7 +505,8 @@ class SongSelectScene(Scene):
 
     def _apply_preview_volume(self) -> None:
         try:
-            pygame.mixer.music.set_volume(self.app.effective_music_volume)
+            with self._preview_playback_lock:
+                pygame.mixer.music.set_volume(self.app.effective_music_volume)
         except Exception:
             pass
 
@@ -646,8 +707,7 @@ class SongSelectScene(Scene):
             self._clear_replay_selection()
         self._center_scroll()
         if restart_preview:
-            self._stop_preview()
-            self._start_preview()
+            self._start_preview(delay_s=self._preview_settle_delay())
         bset = self._selected_set()
         if bset is not None:
             self.app.backgrounds.load(bset.background_path)
@@ -676,6 +736,43 @@ class SongSelectScene(Scene):
         if not beatmap_md5:
             return None
         return self._beatmap_lookup.get(beatmap_md5)
+
+    def _restore_initial_selection(self) -> bool:
+        if not self._sets or not self._initial_beatmap_md5:
+            return False
+        target = self._find_selection_for_md5(self._initial_beatmap_md5)
+        if target is None:
+            return False
+        self._selected_idx, self._selected_diff_idx = target
+        self._initial_beatmap_md5 = None
+        return True
+
+    def _refresh_maps_from_scanner(self) -> None:
+        revision = int(getattr(self.app, "_map_library_revision", 0))
+        if revision == self._map_library_revision_seen:
+            return
+        had_sets = bool(self._sets)
+        selected_md5 = ""
+        info = self._selected_info()
+        if info is not None:
+            selected_md5 = info.beatmap_md5
+        self._sets = self.app.scanner.sets
+        self._map_library_revision_seen = revision
+        self._rebuild_beatmap_lookup()
+        self._invalidate_replay_cache()
+        self._mark_flattened_list_dirty()
+        if not self._sets:
+            self._selected_idx = 0
+            self._selected_diff_idx = 0
+            return
+        target = self._find_selection_for_md5(selected_md5) if selected_md5 else None
+        if target is not None:
+            self._selected_idx, self._selected_diff_idx = target
+        else:
+            self._selected_idx = max(0, min(self._selected_idx, len(self._sets) - 1))
+            self._selected_diff_idx = min(self._selected_diff_idx, len(self._sets[self._selected_idx].maps) - 1)
+        if not had_sets:
+            self._refresh_selected_map_state(clear_replays=False, restart_preview=True)
 
     def _replay_base_label(self, replay_name: str, full_path: str) -> str:
         summary = self._replay_summary_cache.get(full_path)
@@ -920,7 +1017,7 @@ class SongSelectScene(Scene):
                 continue
             seen_paths.add(normalized_local)
             valid_paths.append(normalized_local)
-        if not valid_paths:
+        if not valid_paths and not replays:
             for replay_path in replay_paths:
                 normalized_path = _normalize_replay_path(replay_path)
                 if normalized_path and Path(normalized_path).is_file() and normalized_path not in seen_paths:
@@ -953,6 +1050,49 @@ class SongSelectScene(Scene):
         if info is None or not info.beatmap_md5:
             return None
         return self._online_beatmap_id_for_md5(info.beatmap_md5)
+
+    def _selected_official_beatmap(self):
+        info = self._selected_info()
+        if info is None or not info.beatmap_md5 or not self.app.official_osu_client.auth.linked:
+            return None
+        state = self.app.official_osu_client.lookup_beatmap(info.beatmap_md5, force=False)
+        return state.item
+
+    def _selected_official_beatmap_id(self) -> int | None:
+        beatmap = self._selected_official_beatmap()
+        if beatmap is None:
+            return None
+        return int(beatmap.beatmap_id) if beatmap.beatmap_id else None
+
+    def _official_score_state(self):
+        beatmap_id = self._selected_official_beatmap_id()
+        if beatmap_id is None:
+            self._official_score_sync_key = None
+            return None
+        state = self.app.official_osu_client.score_state(beatmap_id)
+        bset = self._selected_set()
+        replay_dir_mtime: int | None = None
+        replay_dir_key = ""
+        if bset is not None:
+            replay_dir = self._download_dir_for_set(bset)
+            replay_dir_key = bset.directory
+            if replay_dir.is_dir():
+                replay_dir_mtime = replay_dir.stat().st_mtime_ns
+        sync_key = (int(beatmap_id), float(state.loaded_at), replay_dir_key, replay_dir_mtime)
+        if sync_key != self._official_score_sync_key:
+            for item in state.items:
+                self._sync_official_score_local_state(item)
+            self._official_score_sync_key = sync_key
+        return state
+
+    def _selected_official_score(self):
+        state = self._official_score_state()
+        if state is None:
+            return None
+        for item in state.items:
+            if item.score_id == self._selected_official_score_id:
+                return item
+        return None
 
     def _online_beatmap_id_for_md5(self, beatmap_md5: str) -> int | None:
         if not beatmap_md5:
@@ -1012,10 +1152,18 @@ class SongSelectScene(Scene):
             return local_path
         fallback_path = replay.local_path or self.app.social_client.downloaded_path_for_replay(replay.replay_id)
         if fallback_path and Path(fallback_path).is_file():
-            return fallback_path
+            fallback_info = self._replay_entity_info(fallback_path)
+            if fallback_info is not None and fallback_info[0] == entity_key:
+                return fallback_path
+            remembered_path = self.app.social_client.downloaded_path_for_replay(replay.replay_id)
+            if remembered_path == fallback_path:
+                self.app.social_client.local_state.forget_download(replay.replay_id)
+            replay.local_path = None
+            return None
         return None
 
     def _sync_online_replay_local_state(self, replay) -> None:
+        profiler.count("song_select.info_panel.sync.online")
         local_path = self._local_replay_path_for_online_replay(replay)
         replay.local_path = local_path
         replay.is_downloaded = local_path is not None
@@ -1026,6 +1174,63 @@ class SongSelectScene(Scene):
 
     def _download_dir_for_set(self, bset: BeatmapSet) -> Path:
         return replay_dir_for_set(bset.directory)
+
+    def _official_replay_matches_selected_map(self, replay_path: str | None) -> bool:
+        if not replay_path or not Path(replay_path).is_file():
+            return False
+        info = self._selected_info()
+        expected_map_md5 = str(getattr(info, "beatmap_md5", "") or "").strip().lower() if info is not None else ""
+        if not expected_map_md5:
+            return True
+        summary = self._load_replay_summary_sync(replay_path, force=replay_path in self._replay_summary_failed)
+        if summary is None:
+            return False
+        return str(summary.map_md5 or "").strip().lower() == expected_map_md5
+
+    def _local_path_for_official_score(self, score) -> str | None:
+        if self._official_replay_matches_selected_map(score.local_path):
+            return score.local_path
+        score.local_path = None
+        remembered = self.app.official_osu_client.local_state.downloaded_path_for_score(int(score.score_id))
+        if self._official_replay_matches_selected_map(remembered):
+            return remembered
+        if remembered:
+            self.app.official_osu_client.local_state.forget_download(int(score.score_id))
+        if getattr(score, "legacy_score_id", 0):
+            remembered_legacy = self.app.official_osu_client.local_state.downloaded_path_for_score(int(score.legacy_score_id))
+            if self._official_replay_matches_selected_map(remembered_legacy):
+                return remembered_legacy
+            if remembered_legacy:
+                self.app.official_osu_client.local_state.forget_download(int(score.legacy_score_id))
+        bset = self._selected_set()
+        if bset is None:
+            return None
+        replay_dir = self._download_dir_for_set(bset)
+        if not replay_dir.is_dir():
+            return None
+        candidate_ids = [int(score.score_id)]
+        if getattr(score, "legacy_score_id", 0):
+            legacy_score_id = int(score.legacy_score_id)
+            if legacy_score_id not in candidate_ids:
+                candidate_ids.append(legacy_score_id)
+        for path in replay_dir.glob("*.osr"):
+            name = path.name
+            for candidate_id in candidate_ids:
+                if (
+                    name.endswith(f"[{candidate_id}].osr") or name == f"score-{candidate_id}.osr"
+                ) and self._official_replay_matches_selected_map(str(path)):
+                    return str(path)
+        return None
+
+    def _sync_official_score_local_state(self, score) -> None:
+        profiler.count("song_select.info_panel.sync.official")
+        local_path = self._local_path_for_official_score(score)
+        score.local_path = local_path
+        score.is_downloaded = local_path is not None
+        if score.is_downloaded:
+            score.status_text = "Downloaded" if not score.is_downloading else score.status_text
+        elif not score.is_downloading:
+            score.status_text = ""
 
     def _online_replay_state(self):
         beatmap_id = self._selected_online_beatmap_id()
@@ -1053,11 +1258,31 @@ class SongSelectScene(Scene):
             self._multi_replay_enabled = False
             self._danser_replay_enabled = False
             self._selected_multi_replays = []
+            self._set_online_replay_scope_tab(self._online_replay_scope_tab)
+        else:
+            self._selected_online_replay_id = None
+            self._selected_official_score_id = None
+
+    def _set_online_replay_scope_tab(self, tab: str) -> None:
+        if tab not in {"community", "official"} or self._online_replay_scope_tab == tab and self._replay_source_tab == "online":
+            if self._replay_source_tab == "online":
+                return
+        self._online_replay_scope_tab = tab
+        self._replay_scroll_target = 0.0
+        self._replay_scroll_current = 0.0
+        self._close_replay_context_menu(instant=True)
+        self._selected_online_replay_id = None
+        self._selected_official_score_id = None
+        if self._replay_source_tab != "online":
+            return
+        if tab == "community":
             beatmap_id = self._selected_online_beatmap_id()
             if beatmap_id is not None:
                 self.app.social_client.fetch_online_replays(beatmap_id, force=False)
         else:
-            self._selected_online_replay_id = None
+            beatmap_id = self._selected_official_beatmap_id()
+            if beatmap_id is not None:
+                self.app.official_osu_client.fetch_scores(beatmap_id, force=False)
 
     def _close_replay_context_menu(self, *, instant: bool = False) -> None:
         self._replay_context_target = None
@@ -1096,6 +1321,16 @@ class SongSelectScene(Scene):
             if replay.is_downloaded:
                 actions.append("delete")
             return actions
+        if token.startswith("official:"):
+            score = self._find_official_score_by_id(int(token.split(":", 1)[1]))
+            if score is None or not score.has_replay:
+                return []
+            actions: list[str] = []
+            if not score.is_downloaded:
+                actions.append("download")
+            if score.is_downloaded:
+                actions.append("delete")
+            return actions
         if not Path(token).is_file():
             return []
         actions = []
@@ -1132,6 +1367,32 @@ class SongSelectScene(Scene):
                 self.app.social_client.delete_downloaded_replay(replay_id)
                 self._invalidate_replay_cache()
                 if deleted_path and self._selected_replay == deleted_path:
+                    self._clear_replay_selection()
+            return
+        if token.startswith("official:"):
+            score = self._find_official_score_by_id(int(token.split(":", 1)[1]))
+            bset = self._sets[self._selected_idx] if self._sets else None
+            if score is None or bset is None:
+                return
+            if action == "download" and score.has_replay:
+                info = self._selected_info()
+                self.app.official_osu_client.download_score_replay(
+                    score,
+                    str(self._download_dir_for_set(bset)),
+                    expected_map_md5=str(getattr(info, "beatmap_md5", "") or ""),
+                )
+            elif action == "delete" and score.local_path:
+                deleted_path = score.local_path
+                try:
+                    os.remove(deleted_path)
+                except OSError:
+                    pass
+                self.app.official_osu_client.forget_downloaded_score(score)
+                score.local_path = None
+                score.is_downloaded = False
+                score.download_progress = 0.0
+                score.status_text = ""
+                if self._selected_replay == deleted_path:
                     self._clear_replay_selection()
             return
         if action == "upload":
@@ -1175,10 +1436,40 @@ class SongSelectScene(Scene):
         else:
             self._selected_online_replay_id = replay_id
 
+    def _find_official_score_by_id(self, score_id: int):
+        state = self._official_score_state()
+        if state is None:
+            return None
+        for item in state.items:
+            if item.score_id == int(score_id):
+                return item
+        return None
+
+    def _handle_official_score_activate(self, score_id: int) -> None:
+        score = self._find_official_score_by_id(score_id)
+        if score is None:
+            return
+        if score.is_downloaded and score.local_path and Path(score.local_path).is_file():
+            self._set_replay_source_tab("local")
+            self._set_single_selected_replay(score.local_path)
+            return
+        if self._selected_official_score_id == score_id:
+            bset = self._selected_set()
+            if bset is not None and score.has_replay:
+                info = self._selected_info()
+                self.app.official_osu_client.download_score_replay(
+                    score,
+                    str(self._download_dir_for_set(bset)),
+                    expected_map_md5=str(getattr(info, "beatmap_md5", "") or ""),
+                )
+        else:
+            self._selected_official_score_id = score_id
+
     def _clear_replay_selection(self) -> None:
         self._selected_replay = None
         self._selected_multi_replays = []
         self._selected_online_replay_id = None
+        self._selected_official_score_id = None
         self._active_mods = 0
         self._mods_overridden = False
 
@@ -1405,6 +1696,7 @@ class SongSelectScene(Scene):
         self._replay_entity_cache.clear()
         self._replay_entity_index_key = None
         self._replay_entity_index.clear()
+        self._official_score_sync_key = None
         with self._peek_mods_lock:
             self._peek_mods_pending.clear()
 
@@ -1450,10 +1742,13 @@ class SongSelectScene(Scene):
         clickable_rects = [
             getattr(self, "_play_btn_rect", None),
             self._chat_btn_rect,
+            self._map_browser_btn_rect,
             getattr(self, "_settings_btn_rect", None),
             self._songs_open_btn_rect,
             self._replay_local_tab_rect,
             self._replay_online_tab_rect,
+            self._replay_online_community_tab_rect,
+            self._replay_online_official_tab_rect,
             self._multi_toggle_rect,
             self._danser_toggle_rect,
             self._mods_trigger_rect,
@@ -1540,6 +1835,7 @@ class SongSelectScene(Scene):
 
         try:
             dt = min(frametime, 0.05)
+            self._refresh_maps_from_scanner()
             self._replay_context_menu_anim.update(dt)
             if (
                 self._replay_context_menu_anim.target <= 0.001
@@ -1551,43 +1847,23 @@ class SongSelectScene(Scene):
 
             # Apply all pending replay metadata results from background threads.
             self._drain_pending_replay_summaries()
-            beatmap_id = self._selected_online_beatmap_id()
-            if beatmap_id is not None:
-                self.app.social_client.fetch_online_replays(beatmap_id, force=False)
-
-            # Apply pending audio load from background thread (must run on main thread)
-            with self._audio_load_lock:
-                audio_pending = self._audio_load_pending
-                audio_path = self._audio_load_path
-                self._audio_load_pending = None
-                self._audio_load_path = None
-            if audio_pending is not None:
-                with profiler.timer("song_select.audio_apply"):
-                    buffer, namehint, start_sec = audio_pending
-                    expected = (
-                        self._sets[self._selected_idx].audio_path
-                        if self._sets
-                        else None
-                    )
-                    if expected and audio_path == expected:
-                        try:
-                            buffer.seek(0)
-                            target_volume = self.app.effective_music_volume
-                            pygame.mixer.music.stop()
-                            pygame.mixer.music.load(buffer, namehint)
-                            pygame.mixer.music.set_volume(target_volume)
-                            pygame.mixer.music.play(loops=-1, start=start_sec)
-                            pygame.mixer.music.set_volume(target_volume)
-                            self._preview_playing = True
-                        except Exception:
-                            self._preview_playing = False
+            if self._replay_source_tab == "online":
+                if self._online_replay_scope_tab == "community":
+                    beatmap_id = self._selected_online_beatmap_id()
+                    if beatmap_id is not None:
+                        self.app.social_client.fetch_online_replays(beatmap_id, force=False)
+                elif self.app.official_osu_client.auth.linked:
+                    beatmap_id = self._selected_official_beatmap_id()
+                    if beatmap_id is not None:
+                        self.app.official_osu_client.fetch_scores(beatmap_id, force=False)
 
             # Poll for async scan completion
             if not self._sets:
                 self._sets = self.app.scanner.sets
                 if self._sets:
-                    self._selected_idx = 0
-                    self._selected_diff_idx = 0
+                    if not self._restore_initial_selection():
+                        self._selected_idx = 0
+                        self._selected_diff_idx = 0
                     self._mark_flattened_list_dirty()
                     self._center_scroll()
                     self._start_preview()
@@ -2150,6 +2426,10 @@ class SongSelectScene(Scene):
             self.app.social_overlay.toggle()
             return
 
+        if self._map_browser_btn_rect and self._is_in_rect(x, y, self._map_browser_btn_rect):
+            self.app.toggle_osu_map_browser()
+            return
+
         if self._songs_open_btn_rect and self._is_in_rect(x, y, self._songs_open_btn_rect):
             self.app.open_maps_folder()
             return
@@ -2159,6 +2439,12 @@ class SongSelectScene(Scene):
             return
         if self._replay_online_tab_rect and self._is_in_rect(x, y, self._replay_online_tab_rect):
             self._set_replay_source_tab("online")
+            return
+        if self._replay_online_community_tab_rect and self._is_in_rect(x, y, self._replay_online_community_tab_rect):
+            self._set_online_replay_scope_tab("community")
+            return
+        if self._replay_online_official_tab_rect and self._is_in_rect(x, y, self._replay_online_official_tab_rect):
+            self._set_online_replay_scope_tab("official")
             return
 
         if self._multi_toggle_rect and self._is_in_rect(x, y, self._multi_toggle_rect):
@@ -2170,6 +2456,22 @@ class SongSelectScene(Scene):
 
         for ax, ay, aw, ah, token in self._replay_action_rects:
             if ax <= x <= ax + aw and ay <= y <= ay + ah:
+                if token.startswith("official:"):
+                    score = self._find_official_score_by_id(int(token.split(":", 1)[1]))
+                    if score is not None:
+                        if score.is_downloaded and score.local_path and Path(score.local_path).is_file():
+                            self._set_replay_source_tab("local")
+                            self._set_single_selected_replay(score.local_path)
+                        elif score.has_replay:
+                            bset = self._selected_set()
+                            if bset is not None:
+                                info = self._selected_info()
+                                self.app.official_osu_client.download_score_replay(
+                                    score,
+                                    str(self._download_dir_for_set(bset)),
+                                    expected_map_md5=str(getattr(info, "beatmap_md5", "") or ""),
+                                )
+                    return
                 self._open_replay_context_menu(token, ax, ay + ah)
                 return
 
@@ -2203,9 +2505,14 @@ class SongSelectScene(Scene):
             ox, oy, ow, oh = self._open_btn_rect
             if ox <= x <= ox + ow and oy <= y <= oy + oh:
                 if self._replay_source_tab == "online":
-                    beatmap_id = self._selected_online_beatmap_id()
-                    if beatmap_id is not None:
-                        self.app.social_client.fetch_online_replays(beatmap_id, force=True)
+                    if self._online_replay_scope_tab == "official":
+                        beatmap_id = self._selected_official_beatmap_id()
+                        if beatmap_id is not None:
+                            self.app.official_osu_client.fetch_scores(beatmap_id, force=True)
+                    else:
+                        beatmap_id = self._selected_online_beatmap_id()
+                        if beatmap_id is not None:
+                            self.app.social_client.fetch_online_replays(beatmap_id, force=True)
                 else:
                     bset = self._sets[self._selected_idx]
                     self._open_replays_folder(bset)
@@ -2237,6 +2544,9 @@ class SongSelectScene(Scene):
                 if rx <= x <= rx + rw and ry <= y <= ry + rh:
                     if rpath.startswith("online:"):
                         self._handle_online_replay_activate(rpath.split(":", 1)[1])
+                        return
+                    if rpath.startswith("official:"):
+                        self._handle_official_score_activate(int(rpath.split(":", 1)[1]))
                         return
                     if self._multi_replay_enabled:
                         self._toggle_multi_selected_replay(rpath)
@@ -2327,6 +2637,7 @@ class SongSelectScene(Scene):
         self._anim_timer = 0.0
         if self._preview_playing:
             try:
-                pygame.mixer.music.fadeout(int(EXIT_DURATION * 1000))
+                with self._preview_playback_lock:
+                    pygame.mixer.music.fadeout(int(EXIT_DURATION * 1000))
             except Exception:
                 pass
