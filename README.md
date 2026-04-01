@@ -124,21 +124,6 @@ Official osu OAuth session state is stored under `server/storage/osu_auth`.
 
 Client social-server config comes from the repo root `.env` file via `OSU_REPLAY_SERVER_URL`.
 
-If you want official osu login, official search, official replay download, and mirror-backed beatmap downloads to work in Docker, set these in `server/.env` before `docker compose up -d --build`:
-
-```env
-OSU_OFFICIAL_CLIENT_ID=your_osu_oauth_client_id
-OSU_OFFICIAL_CLIENT_SECRET=your_osu_oauth_client_secret
-OSU_OFFICIAL_REDIRECT_URI=http://127.0.0.1:8000/osu/auth/callback
-OSU_OFFICIAL_SCOPES=public identify
-OSU_MIRROR_DOWNLOAD_TEMPLATES=https://api.chimu.moe/v1/download/{beatmapset_id},https://osu.direct/d/{beatmapset_id}
-OSU_MIRROR_TIMEOUT_SECONDS=60
-```
-
-The redirect URI in your osu OAuth application must exactly match `OSU_OFFICIAL_REDIRECT_URI`.
-The official API still provides search metadata and replay access, but beatmap `.osz` downloads now come from the configured mirror list in `OSU_MIRROR_DOWNLOAD_TEMPLATES`. The server tries providers in order until one returns a valid archive.
-Each mirror entry should be a full download URL template containing `{beatmapset_id}`.
-
 Examples:
 
 - Local Docker on your own PC: `http://127.0.0.1:8000/osu/auth/callback`
