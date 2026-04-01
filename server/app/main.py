@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
 from collections import defaultdict
 from pathlib import Path
 
@@ -110,6 +111,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.state.manager = ConnectionManager()
+_REPLAYFILE_PARSE_LOCK = threading.Lock()
 
 
 @app.on_event("startup")
@@ -302,7 +304,7 @@ def osu_auth_callback(
         return HTMLResponse(f"<h2>osu login failed</h2><p>{exc.detail}</p>", status_code=exc.status_code)
     osu_auth_store.save_session(player_uuid, session)
     return HTMLResponse(
-        "<h2>osu account linked</h2><p>You can close this tab and return to osu_replay_v2.</p>",
+        "<h2>osu account linked</h2><p>You can close this tab.</p>",
         status_code=200,
     )
 
@@ -586,7 +588,8 @@ def _parse_replay_summary(path: str) -> dict[str, int | str]:
     try:
         from osupyparser.osr.osr_parser import ReplayFile
 
-        replay = ReplayFile.from_file(path)
+        with _REPLAYFILE_PARSE_LOCK:
+            replay = ReplayFile.from_file(path)
         return {
             "player_name": replay.player_name or "",
             "mods": int(replay.mods),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -352,7 +353,12 @@ class SocialClient:
             replay = self._find_replay_by_id(replay_id)
             if replay is None or replay.is_downloading:
                 return
-            existing_path = self._existing_download_path_for_replay(replay_id, target_dir)
+            existing_path = self._existing_download_path_for_replay(
+                replay_id,
+                target_dir,
+                beatmap_id=replay.beatmap_id,
+                replay_hash=replay.replay_hash,
+            )
             if existing_path:
                 replay.local_path = existing_path
                 replay.is_downloaded = True
@@ -406,16 +412,50 @@ class SocialClient:
 
         self._spawn(f"download:{replay_id}", worker)
 
-    def _existing_download_path_for_replay(self, replay_id: str, target_dir: str) -> str | None:
+    def _download_path_matches_replay(
+        self,
+        local_path: str | None,
+        *,
+        beatmap_id: int | None,
+        replay_hash: str,
+    ) -> bool:
+        if not local_path:
+            return False
+        path = Path(local_path)
+        if not path.is_file():
+            return False
+        if beatmap_id is None or not replay_hash:
+            return True
+        try:
+            payload = path.read_bytes()
+        except OSError:
+            return False
+        computed_hash = hashlib.sha256(payload + f":{int(beatmap_id)}".encode("utf-8")).hexdigest()
+        return computed_hash == replay_hash
+
+    def _existing_download_path_for_replay(
+        self,
+        replay_id: str,
+        target_dir: str,
+        *,
+        beatmap_id: int | None,
+        replay_hash: str,
+    ) -> str | None:
         remembered = self.local_state.replay_downloads.get(replay_id)
-        if remembered and Path(remembered).is_file():
+        if self._download_path_matches_replay(remembered, beatmap_id=beatmap_id, replay_hash=replay_hash):
             return remembered
+        if remembered:
+            self.local_state.forget_download(replay_id)
         root = Path(target_dir)
         if not root.is_dir():
             return None
         suffix = f"[{replay_id[:8]}].osr"
         for path in root.glob("*.osr"):
-            if path.name.endswith(suffix):
+            if path.name.endswith(suffix) and self._download_path_matches_replay(
+                str(path),
+                beatmap_id=beatmap_id,
+                replay_hash=replay_hash,
+            ):
                 return str(path)
         return None
 
@@ -737,15 +777,24 @@ class SocialClient:
         for row in rows:
             replay_id = str(row["replay_id"])
             local_path = self.local_state.replay_downloads.get(replay_id)
-            if local_path and (not Path(local_path).is_file() or local_path in seen_local_paths):
+            replay_hash = str(row.get("replay_hash") or "")
+            beatmap_id = int(row["beatmap_id"])
+            if local_path and not self._download_path_matches_replay(
+                local_path,
+                beatmap_id=beatmap_id,
+                replay_hash=replay_hash,
+            ):
+                self.local_state.forget_download(replay_id)
+                local_path = None
+            elif local_path and local_path in seen_local_paths:
                 local_path = None
             elif local_path:
                 seen_local_paths.add(local_path)
             items.append(
                 OnlineReplayMetadata(
                     replay_id=replay_id,
-                    beatmap_id=int(row["beatmap_id"]),
-                    replay_hash=str(row["replay_hash"]),
+                    beatmap_id=beatmap_id,
+                    replay_hash=replay_hash,
                     player_name=str(row.get("player_name") or ""),
                     mods=int(row.get("mods") or 0),
                     score=int(row.get("score") or 0),

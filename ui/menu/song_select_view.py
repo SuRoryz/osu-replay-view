@@ -37,12 +37,21 @@ class SongSelectBaseLayout:
     bottom_bar_rect: Rect
 
 
-def _truncate_text(text, value: str, size: int, max_width: float) -> str:
+def _fit_text(text, value: str, size: int, max_width: float) -> tuple[str, float]:
     if max_width <= 0:
-        return ""
-    if text.measure(value, size)[0] <= max_width:
-        return value
-    return text.truncate(value, size, max_width)
+        return ("", 0.0)
+    if hasattr(text, "truncate_with_width"):
+        return text.truncate_with_width(value, size, max_width)
+    measured_width, _ = text.measure(value, size)
+    if measured_width <= max_width:
+        return (value, measured_width)
+    fitted = text.truncate(value, size, max_width)
+    fitted_width, _ = text.measure(fitted, size)
+    return (fitted, fitted_width)
+
+
+def _truncate_text(text, value: str, size: int, max_width: float) -> str:
+    return _fit_text(text, value, size, max_width)[0]
 
 
 def _prefer_renderable_text(primary: str, secondary: str, *, empty_fallback: str) -> str:
@@ -55,7 +64,7 @@ def _prefer_renderable_text(primary: str, secondary: str, *, empty_fallback: str
     return empty_fallback
 
 
-def _hover_anim(scene, key: str, hovered: bool, *, speed: float = 0.22) -> float:
+def _hover_anim(scene, key: object, hovered: bool, *, speed: float = 0.22) -> float:
     if not hasattr(scene, "_ui_hover_anim"):
         scene._ui_hover_anim = {}
     current = float(scene._ui_hover_anim.get(key, 0.0))
@@ -145,10 +154,27 @@ class _LocalCoverEntry:
     fade: float = 0.0
 
 
+@dataclass(slots=True)
+class _SongCardTextLayout:
+    title: str
+    title_w: float
+    artist: str
+    artist_w: float
+    diff_label: str
+    diff_w: float
+
+
+@dataclass(slots=True)
+class _ReplayRowTextLayout:
+    primary: str
+    secondary: str = ""
+
+
 class _SongCardCoverRenderer:
     def __init__(self, ctx: moderngl.Context) -> None:
         self.ctx = ctx
         self._prog = ctx.program(vertex_shader=_CARD_COVER_VERT, fragment_shader=_CARD_COVER_FRAG)
+        self._prog["tex"].value = 0
         verts = np.array([
             0.0, 0.0, 0.0, 0.0,
             1.0, 0.0, 1.0, 0.0,
@@ -185,17 +211,20 @@ class _SongCardCoverRenderer:
         p[3, 1] = 1.0
         self._projection = p
         self._projection_bytes = p.tobytes()
+        self._prog["projection"].write(self._projection_bytes)
 
     def request(self, image_path: str | None) -> None:
         value = str(image_path or "").strip()
-        if not value or not Path(value).is_file():
+        if not value:
             return
         entry = self._entries.get(value)
+        if entry is not None and (entry.texture is not None or entry.loading or entry.failed):
+            return
+        if not Path(value).is_file():
+            return
         if entry is None:
             entry = _LocalCoverEntry()
             self._entries[value] = entry
-        if entry.texture is not None or entry.loading or entry.failed:
-            return
         entry.loading = True
         threading.Thread(target=self._load_worker, args=(value,), daemon=True, name="song-card-cover-load").start()
 
@@ -237,6 +266,9 @@ class _SongCardCoverRenderer:
             entry.failed = False
             entry.fade = 0.0
 
+    def process_pending(self) -> None:
+        self._apply_pending()
+
     def draw(
         self,
         image_path: str | None,
@@ -248,7 +280,6 @@ class _SongCardCoverRenderer:
         overlay_alpha: float,
         dim: float,
     ) -> bool:
-        self._apply_pending()
         value = str(image_path or "").strip()
         if not value:
             return False
@@ -259,8 +290,6 @@ class _SongCardCoverRenderer:
         self.ctx.enable(moderngl.BLEND)
         self.ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
         entry.texture.use(location=0)
-        self._prog["tex"].value = 0
-        self._prog["projection"].write(self._projection_bytes)
         self._prog["u_rect_pos"].value = (rect.x, rect.y)
         self._prog["u_rect_size"].value = (rect.w, rect.h)
         self._prog["u_radius"].value = max(0.0, radius)
@@ -276,6 +305,132 @@ class SongSelectMenuView:
     def __init__(self) -> None:
         self._commands = RenderCommandBuffer()
         self._cover_renderer: _SongCardCoverRenderer | None = None
+        self._sorted_diff_cache: dict[tuple[str, tuple[str, ...]], tuple] = {}
+        self._card_text_cache: dict[tuple[str, str, str, int, int, int, int, int, int], _SongCardTextLayout] = {}
+        self._replay_text_cache: dict[tuple[str, str, int, int, int, int], _ReplayRowTextLayout] = {}
+        self._visible_row_overscan = 2
+
+    @staticmethod
+    def _prune_cache(cache: dict, limit: int) -> None:
+        if len(cache) > limit:
+            cache.pop(next(iter(cache)))
+
+    def _sorted_diff_infos(self, bset) -> tuple:
+        key = (bset.directory, tuple(info.path for info in bset.maps))
+        cached = self._sorted_diff_cache.get(key)
+        if cached is not None:
+            return cached
+        cached = tuple(sorted(bset.maps, key=self._approx_local_difficulty))
+        self._sorted_diff_cache[key] = cached
+        self._prune_cache(self._sorted_diff_cache, 2048)
+        return cached
+
+    def _card_text_layout(
+        self,
+        text,
+        *,
+        raw_title: str,
+        raw_artist: str,
+        raw_diff: str,
+        title_size: int,
+        artist_size: int,
+        meta_size: int,
+        text_max_w: float,
+        density: float,
+    ) -> _SongCardTextLayout:
+        title_max_w = max(0.0, text_max_w - 20.0 * density)
+        artist_max_w = max(0.0, text_max_w - 18.0 * density)
+        diff_max_w = max(0.0, text_max_w - 18.0 * density)
+        cache_key = (
+            raw_title,
+            raw_artist,
+            raw_diff,
+            title_size,
+            artist_size,
+            meta_size,
+            int(title_max_w),
+            int(artist_max_w),
+            int(diff_max_w),
+        )
+        cached = self._card_text_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        title, title_w = _fit_text(text, raw_title, title_size, title_max_w)
+        artist, artist_w = _fit_text(text, raw_artist, artist_size, artist_max_w)
+        diff_label, diff_w = _fit_text(text, raw_diff, meta_size, diff_max_w)
+        cached = _SongCardTextLayout(
+            title=title,
+            title_w=title_w,
+            artist=artist,
+            artist_w=artist_w,
+            diff_label=diff_label,
+            diff_w=diff_w,
+        )
+        self._card_text_cache[cache_key] = cached
+        self._prune_cache(self._card_text_cache, 8192)
+        return cached
+
+    def _replay_text_layout(
+        self,
+        text,
+        *,
+        primary: str,
+        secondary: str = "",
+        primary_size: int,
+        secondary_size: int,
+        primary_max_w: float,
+        secondary_max_w: float,
+    ) -> _ReplayRowTextLayout:
+        cache_key = (
+            primary,
+            secondary,
+            primary_size,
+            secondary_size,
+            int(primary_max_w),
+            int(secondary_max_w),
+        )
+        cached = self._replay_text_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        fitted_primary = _truncate_text(text, primary, primary_size, primary_max_w)
+        fitted_secondary = _truncate_text(text, secondary, secondary_size, secondary_max_w) if secondary else ""
+        cached = _ReplayRowTextLayout(primary=fitted_primary, secondary=fitted_secondary)
+        self._replay_text_cache[cache_key] = cached
+        self._prune_cache(self._replay_text_cache, 8192)
+        return cached
+
+    def _visible_song_row_range(self, scene, metrics: dict, row_count: int) -> tuple[int, int]:
+        if row_count <= 0:
+            return (0, 0)
+        density = metrics["layout"].context.density
+        visible_rect: Rect = metrics["visible_rect"]
+        item_h = metrics["item_h"]
+        overscan_px = 108.0 * density + 100.0 * density
+        start_y = max(0.0, scene._scroll_current - overscan_px)
+        end_y = max(start_y, scene._scroll_current + visible_rect.h + overscan_px)
+        start_idx = max(0, int(start_y // item_h) - self._visible_row_overscan)
+        end_idx = min(row_count, int(end_y // item_h) + self._visible_row_overscan + 2)
+        return (start_idx, end_idx)
+
+    def _visible_replay_row_range(
+        self,
+        scene,
+        *,
+        total_rows: int,
+        row_h: float,
+        row_gap: float,
+        top_pad: float,
+        section_h: float,
+    ) -> tuple[int, int]:
+        if total_rows <= 0:
+            return (0, 0)
+        row_pitch = row_h + row_gap
+        overscan_px = row_pitch * max(2, self._visible_row_overscan)
+        start_y = max(0.0, scene._replay_scroll_current - top_pad - overscan_px)
+        end_y = max(start_y, scene._replay_scroll_current - top_pad + section_h + overscan_px)
+        start_idx = max(0, int(start_y // row_pitch))
+        end_idx = min(total_rows, int(end_y // row_pitch) + 2)
+        return (start_idx, end_idx)
 
     def _draw_eye_metric(self, theme, rect: Rect, *, value: str, size: int, alpha: float) -> None:
         colors = theme.colors
@@ -589,6 +744,8 @@ class SongSelectMenuView:
             self._cover_renderer = _SongCardCoverRenderer(scene.app.ctx)
         self._cover_renderer.set_projection(*scene.app.wnd.buffer_size)
         self._cover_renderer.update(1.0 / 60.0)
+        with profiler.timer("song_select.view.cover_prepare"):
+            self._cover_renderer.process_pending()
         self._commands.clear()
         scene._song_card_rects = []
         scene._replay_rects = []
@@ -671,6 +828,9 @@ class SongSelectMenuView:
             flattened = scene._build_flattened_list()
         if flattened:
             profiler.count("song_select.song_list.rows.total", len(flattened))
+        row_start, row_end = self._visible_song_row_range(scene, metrics, len(flattened))
+        if row_end > row_start:
+            profiler.count("song_select.song_list.rows.iterated", row_end - row_start)
         previous_scissor = scene.app.ctx.scissor
         scene.app.ctx.scissor = (
             max(0, int(visible_rect.x)),
@@ -683,8 +843,15 @@ class SongSelectMenuView:
         cover_requests = 0
         cover_hits = 0
         diff_markers = 0
+        title_size = max(layout.context.tokens.typography.body_l + 1, layout.context.tokens.typography.title_s - 2)
+        artist_size = layout.context.tokens.typography.body_m
+        meta_size = layout.context.tokens.typography.body_s
+        diff_size = 18.0 * density
+        diff_gap = 7.0 * density
+        min_text_w = 240.0 * density
         with profiler.timer("song_select.song_list.cards"):
-            for flat_i, (set_idx, diff_idx) in enumerate(flattened):
+            for flat_i in range(row_start, row_end):
+                set_idx, diff_idx = flattened[flat_i]
                 card_rect = self.song_card_rect(scene, metrics, flat_i, set_idx=set_idx, diff_idx=diff_idx)
                 if card_rect.bottom < visible_rect.y or card_rect.y > visible_rect.bottom:
                     continue
@@ -696,6 +863,7 @@ class SongSelectMenuView:
                     continue
                 visible_cards += 1
                 is_selected = (set_idx == scene._selected_idx and diff_idx == scene._selected_diff_idx)
+                background_path = bset.background_path
                 is_hovered = (
                     fade_alpha > 0.08
                     and
@@ -705,12 +873,12 @@ class SongSelectMenuView:
                 if is_hovered:
                     scene._hover_idx = flat_i
                     hovered_cards += 1
-                hover_anim = _hover_anim(scene, f"song.card.{flat_i}", is_hovered, speed=0.20)
+                hover_anim = _hover_anim(scene, ("song.card", flat_i), is_hovered, speed=0.20)
                 card_rect = card_rect.translate(dx=6.0 * density * hover_anim, dy=-2.0 * density * hover_anim)
-                if self._cover_renderer is not None and bset.background_path:
+                if self._cover_renderer is not None and background_path:
                     cover_requests += 1
                     if self._cover_renderer.draw(
-                        bset.background_path,
+                        background_path,
                         card_rect,
                         radius=14.0 * density,
                         alpha=(0.95 if is_selected else (0.90 if is_hovered else 0.82)) * fade_alpha,
@@ -729,7 +897,7 @@ class SongSelectMenuView:
                         colors.surface_container[0],
                         colors.surface_container[1],
                         colors.surface_container[2],
-                        (0.14 if bset.background_path else (0.72 if is_selected else (0.62 if is_hovered else 0.56))) * fade_alpha,
+                        (0.14 if background_path else (0.72 if is_selected else (0.62 if is_hovered else 0.56))) * fade_alpha,
                     ),
                     border_color=(
                         colors.focus_ring[0],
@@ -742,14 +910,8 @@ class SongSelectMenuView:
                 if scene._debug_layout:
                     scene._debug_rect(card_rect.x, card_rect.y, card_rect.w, card_rect.h, (0.88, 0.38, 0.95, 0.7))
 
-                title_size = max(layout.context.tokens.typography.body_l + 1, layout.context.tokens.typography.title_s - 2)
-                artist_size = layout.context.tokens.typography.body_m
-                meta_size = layout.context.tokens.typography.body_s
-                diff_size = 18.0 * density
-                diff_gap = 7.0 * density
-                min_text_w = 240.0 * density
                 is_expanded_row = (set_idx == scene._selected_idx and len(bset.maps) > 1)
-                diff_infos = [info] if is_expanded_row and info is not None else sorted(bset.maps, key=self._approx_local_difficulty)
+                diff_infos = (info,) if is_expanded_row and info is not None else self._sorted_diff_infos(bset)
                 max_diff_space = max(0.0, card_rect.w - 36.0 * density - min_text_w)
                 visible_diff_count = min(
                     len(diff_infos),
@@ -773,16 +935,21 @@ class SongSelectMenuView:
                     raw_diff = (info.version or "").strip() or "No difficulties found"
                 else:
                     raw_diff = "No difficulties found"
-                title = _truncate_text(text, raw_title, title_size, text_max_w - 20.0 * density)
-                artist = _truncate_text(text, raw_artist, artist_size, text_max_w - 18.0 * density)
-                diff_label = _truncate_text(text, raw_diff, meta_size, text_max_w - 18.0 * density)
+                text_layout = self._card_text_layout(
+                    text,
+                    raw_title=raw_title,
+                    raw_artist=raw_artist,
+                    raw_diff=raw_diff,
+                    title_size=title_size,
+                    artist_size=artist_size,
+                    meta_size=meta_size,
+                    text_max_w=text_max_w,
+                    density=density,
+                )
                 content_x = card_rect.x + 18.0 * density
-                title_w, _ = text.measure(title, title_size)
-                artist_w, _ = text.measure(artist, artist_size)
-                diff_w, _ = text.measure(diff_label, meta_size)
-                title_capsule = Rect(content_x - 2.0 * density, card_rect.y + 11.0 * density, min(text_max_w, title_w + 20.0 * density), 20.0 * density)
-                artist_capsule = Rect(content_x - 2.0 * density, card_rect.y + 34.0 * density, min(text_max_w, artist_w + 18.0 * density), 18.0 * density)
-                diff_capsule = Rect(content_x - 2.0 * density, card_rect.y + 57.0 * density, min(text_max_w, diff_w + 18.0 * density), 18.0 * density)
+                title_capsule = Rect(content_x - 2.0 * density, card_rect.y + 11.0 * density, min(text_max_w, text_layout.title_w + 20.0 * density), 20.0 * density)
+                artist_capsule = Rect(content_x - 2.0 * density, card_rect.y + 34.0 * density, min(text_max_w, text_layout.artist_w + 18.0 * density), 18.0 * density)
+                diff_capsule = Rect(content_x - 2.0 * density, card_rect.y + 57.0 * density, min(text_max_w, text_layout.diff_w + 18.0 * density), 18.0 * density)
                 self._commands.panel(
                     title_capsule,
                     radius=10.0 * density,
@@ -804,10 +971,10 @@ class SongSelectMenuView:
                     border_color=(0.0, 0.0, 0.0, 0.0),
                     border_width=0.0,
                 )
-                self._commands.text(title, content_x + 8.0 * density, card_rect.y + 7.0 * density, title_size, color=colors.text_primary, alpha=0.96 * fade_alpha)
-                self._commands.text(artist, content_x + 7.0 * density, card_rect.y + 31.0 * density, artist_size, color=colors.text_secondary, alpha=0.88 * fade_alpha)
+                self._commands.text(text_layout.title, content_x + 8.0 * density, card_rect.y + 7.0 * density, title_size, color=colors.text_primary, alpha=0.96 * fade_alpha)
+                self._commands.text(text_layout.artist, content_x + 7.0 * density, card_rect.y + 31.0 * density, artist_size, color=colors.text_secondary, alpha=0.88 * fade_alpha)
                 self._commands.text(
-                    diff_label,
+                    text_layout.diff_label,
                     content_x + 7.0 * density,
                     card_rect.y + 56.0 * density,
                     meta_size,
@@ -992,51 +1159,58 @@ class SongSelectMenuView:
 
             y = hero_rect.bottom + 18.0 * density
 
-        all_replays = scene._replays_for_set(bset) if bset else []
-        replays = scene._visible_replays_for_set(bset) if bset else []
-        beatmap_id = scene._selected_online_beatmap_id()
-        online_state = scene.app.social_client.online_replays(beatmap_id) if beatmap_id is not None else None
-        online_items = [] if online_state is None else online_state.items
-        official_beatmap_id = scene._selected_official_beatmap_id()
-        official_score_state = scene._official_score_state()
-        official_items = [] if official_score_state is None else official_score_state.items
-        if scene._replay_source_tab == "online" and scene._online_replay_scope_tab == "official":
-            if official_items:
-                profiler.count("song_select.info_panel.replays.official.total", len(official_items))
-        elif scene._replay_source_tab == "online":
-            if online_items:
-                profiler.count("song_select.info_panel.replays.online.total", len(online_items))
-        elif replays:
-            profiler.count("song_select.info_panel.replays.local.total", len(replays))
-        if scene._replay_source_tab == "online" and scene._online_replay_scope_tab == "official":
-            auth = scene.app.official_osu_client.auth
-            if not auth.enabled:
-                replay_meta = "Server not configured"
-            elif not auth.linked:
-                replay_meta = "Login required"
-            elif official_score_state is None:
-                replay_meta = "Matching beatmap..."
-            elif official_score_state.loading and not official_items:
-                replay_meta = "Loading..."
-            elif official_score_state.error and not official_items:
-                replay_meta = "Unavailable"
-            elif not official_items and official_score_state.loaded_at > 0.0:
-                replay_meta = "No official replays"
+        all_replays = []
+        replays = []
+        beatmap_id = None
+        online_state = None
+        online_items = []
+        official_beatmap_id = None
+        official_score_state = None
+        official_items = []
+        with profiler.timer("song_select.info_panel.state_prep"):
+            if scene._replay_source_tab == "online" and scene._online_replay_scope_tab == "official":
+                auth = scene.app.official_osu_client.auth
+                official_beatmap_id = scene._selected_official_beatmap_id()
+                official_score_state = scene._official_score_state() if official_beatmap_id is not None else None
+                official_items = [] if official_score_state is None else official_score_state.items
+                if official_items:
+                    profiler.count("song_select.info_panel.replays.official.total", len(official_items))
+                if not auth.enabled:
+                    replay_meta = "Server not configured"
+                elif not auth.linked:
+                    replay_meta = "Login required"
+                elif official_score_state is None:
+                    replay_meta = "Matching beatmap..."
+                elif official_score_state.loading and not official_items:
+                    replay_meta = "Loading..."
+                elif official_score_state.error and not official_items:
+                    replay_meta = "Unavailable"
+                elif not official_items and official_score_state.loaded_at > 0.0:
+                    replay_meta = "No official replays"
+                else:
+                    replay_meta = f"{len(official_items)} official"
+            elif scene._replay_source_tab == "online":
+                beatmap_id = scene._selected_online_beatmap_id()
+                online_state = scene.app.social_client.online_replays(beatmap_id) if beatmap_id is not None else None
+                online_items = [] if online_state is None else online_state.items
+                if online_items:
+                    profiler.count("song_select.info_panel.replays.online.total", len(online_items))
+                if online_state is None:
+                    replay_meta = "No beatmap selected"
+                elif online_state.loading and not online_items:
+                    replay_meta = "Loading..."
+                elif online_state.error and not online_items:
+                    replay_meta = "Unavailable"
+                elif not online_items and online_state.loaded_at > 0.0:
+                    replay_meta = "No replays found"
+                else:
+                    replay_meta = f"{len(online_items)} online"
             else:
-                replay_meta = f"{len(official_items)} official"
-        elif scene._replay_source_tab == "online":
-            if online_state is None:
-                replay_meta = "No beatmap selected"
-            elif online_state.loading and not online_items:
-                replay_meta = "Loading..."
-            elif online_state.error and not online_items:
-                replay_meta = "Unavailable"
-            elif not online_items and online_state.loaded_at > 0.0:
-                replay_meta = "No replays found"
-            else:
-                replay_meta = f"{len(online_items)} online"
-        else:
-            replay_meta = f"{len(replays)} shown" if len(replays) == len(all_replays) else f"{len(replays)} shown / {len(all_replays)} saved"
+                all_replays = scene._replays_for_set(bset) if bset else []
+                replays = scene._visible_replays_for_set(bset) if bset else []
+                if replays:
+                    profiler.count("song_select.info_panel.replays.local.total", len(replays))
+                replay_meta = f"{len(replays)} shown" if len(replays) == len(all_replays) else f"{len(replays)} shown / {len(all_replays)} saved"
         draw_header_pair(
             self._commands,
             text,
@@ -1190,7 +1364,18 @@ class SongSelectMenuView:
                 auth = scene.app.official_osu_client.auth
                 row_h = 40.0 * density
                 row_gap = 6.0 * density
-                ry = section_rect.y + 8.0 * density - scene._replay_scroll_current
+                row_top_pad = 8.0 * density
+                row_pitch = row_h + row_gap
+                row_start, row_end = self._visible_replay_row_range(
+                    scene,
+                    total_rows=len(official_items),
+                    row_h=row_h,
+                    row_gap=row_gap,
+                    top_pad=row_top_pad,
+                    section_h=section_rect.h,
+                )
+                if row_end > row_start:
+                    profiler.count("song_select.info_panel.replay_rows.iterated", row_end - row_start)
                 if not auth.enabled:
                     self._commands.text("Official osu support is disabled on the server", section_rect.x + 12.0 * density, section_rect.y + 14.0 * density, layout.context.tokens.typography.body_m, color=colors.text_muted)
                 elif not auth.linked:
@@ -1204,13 +1389,10 @@ class SongSelectMenuView:
                     self._commands.text(official_score_state.error, section_rect.x + 12.0 * density, section_rect.y + 34.0 * density, layout.context.tokens.typography.caption, color=colors.text_muted, alpha=0.65)
                 elif not official_items:
                     self._commands.text("No official replay available for this beatmap", section_rect.x + 12.0 * density, section_rect.y + 14.0 * density, layout.context.tokens.typography.body_m, color=colors.text_muted)
-                for item in official_items:
+                for item_idx in range(row_start, row_end):
+                    item = official_items[item_idx]
+                    ry = section_rect.y + row_top_pad - scene._replay_scroll_current + item_idx * row_pitch
                     row_rect = Rect(section_rect.x + 4.0 * density, ry, section_rect.w - 8.0 * density, row_h)
-                    if row_rect.bottom < visible_top:
-                        ry += row_h + row_gap
-                        continue
-                    if row_rect.y > visible_bottom:
-                        break
                     visible_replay_rows += 1
                     row_hover = row_rect.contains(scene._mouse_x, scene._mouse_y)
                     row_anim = _hover_anim(scene, f"info.official_score.{item.score_id}", row_hover, speed=0.22)
@@ -1251,9 +1433,16 @@ class SongSelectMenuView:
                     label_text = f"{item.username or 'Unknown'}  +{item.mods_text}"
                     if not item.has_replay:
                         label_text += "  (no replay)"
-                    label = _truncate_text(text, label_text, layout.context.tokens.typography.body_s, row_draw_rect.w - 118.0 * density)
+                    text_layout = self._replay_text_layout(
+                        text,
+                        primary=label_text,
+                        primary_size=layout.context.tokens.typography.body_s,
+                        secondary_size=layout.context.tokens.typography.caption,
+                        primary_max_w=row_draw_rect.w - 118.0 * density,
+                        secondary_max_w=row_draw_rect.w - 136.0 * density,
+                    )
                     self._commands.text(
-                        label,
+                        text_layout.primary,
                         row_draw_rect.x + 18.0 * density,
                         row_draw_rect.y + 3.0 * density,
                         layout.context.tokens.typography.body_s,
@@ -1262,7 +1451,14 @@ class SongSelectMenuView:
                     )
                     stat_text = f"{item.accuracy * 100.0:.2f}%  {item.max_combo}x"
                     self._commands.text(
-                        _truncate_text(text, stat_text, layout.context.tokens.typography.caption, row_draw_rect.w - 136.0 * density),
+                        self._replay_text_layout(
+                            text,
+                            primary=stat_text,
+                            primary_size=layout.context.tokens.typography.caption,
+                            secondary_size=layout.context.tokens.typography.caption,
+                            primary_max_w=row_draw_rect.w - 136.0 * density,
+                            secondary_max_w=0.0,
+                        ).primary,
                         row_draw_rect.x + 18.0 * density,
                         row_draw_rect.y + 19.0 * density,
                         layout.context.tokens.typography.caption,
@@ -1286,12 +1482,22 @@ class SongSelectMenuView:
                     )
                     scene._replay_rects.append((row_draw_rect.x, row_draw_rect.y, row_draw_rect.w, row_draw_rect.h, f"official:{item.score_id}"))
                     scene._replay_action_rects.append((button_rect.x, button_rect.y, button_rect.w, button_rect.h, f"official:{item.score_id}"))
-                    ry += row_h + row_gap
                 scene._replay_total_h = 8.0 * density + len(official_items) * row_h + max(0, len(official_items) - 1) * row_gap + 8.0 * density
             elif scene._replay_source_tab == "online" and scene._online_replay_scope_tab == "community" and online_state is not None:
                 row_h = 40.0 * density
                 row_gap = 6.0 * density
-                ry = section_rect.y + 8.0 * density - scene._replay_scroll_current
+                row_top_pad = 8.0 * density
+                row_pitch = row_h + row_gap
+                row_start, row_end = self._visible_replay_row_range(
+                    scene,
+                    total_rows=len(online_items),
+                    row_h=row_h,
+                    row_gap=row_gap,
+                    top_pad=row_top_pad,
+                    section_h=section_rect.h,
+                )
+                if row_end > row_start:
+                    profiler.count("song_select.info_panel.replay_rows.iterated", row_end - row_start)
                 if online_state.loading and not online_items:
                     self._commands.text("Loading online replays...", section_rect.x + 12.0 * density, section_rect.y + 14.0 * density, layout.context.tokens.typography.body_m, color=colors.text_muted)
                 elif online_state.error and not online_items:
@@ -1300,14 +1506,11 @@ class SongSelectMenuView:
                 elif not online_items:
                     self._commands.text("No replays found", section_rect.x + 12.0 * density, section_rect.y + 14.0 * density, layout.context.tokens.typography.body_m, color=colors.text_muted)
                     self._commands.text("Upload one from the local tab or refresh later.", section_rect.x + 12.0 * density, section_rect.y + 34.0 * density, layout.context.tokens.typography.caption, color=colors.text_muted, alpha=0.65)
-                for item in online_items:
+                for item_idx in range(row_start, row_end):
+                    item = online_items[item_idx]
                     scene._sync_online_replay_local_state(item)
+                    ry = section_rect.y + row_top_pad - scene._replay_scroll_current + item_idx * row_pitch
                     row_rect = Rect(section_rect.x + 4.0 * density, ry, section_rect.w - 8.0 * density, row_h)
-                    if row_rect.bottom < visible_top:
-                        ry += row_h + row_gap
-                        continue
-                    if row_rect.y > visible_bottom:
-                        break
                     visible_replay_rows += 1
                     row_hover = row_rect.contains(scene._mouse_x, scene._mouse_y)
                     row_anim = _hover_anim(scene, f"info.online_replay.{item.replay_id}", row_hover, speed=0.22)
@@ -1347,7 +1550,14 @@ class SongSelectMenuView:
                             track_alpha=0.22,
                         )
                     label_text = f"{item.player_name or Path(item.original_filename).stem}  {scene.mod_string(item.mods) or '+NM'}"
-                    label = _truncate_text(text, label_text, layout.context.tokens.typography.body_s, row_draw_rect.w - 92.0 * density)
+                    label = self._replay_text_layout(
+                        text,
+                        primary=label_text,
+                        primary_size=layout.context.tokens.typography.body_s,
+                        secondary_size=layout.context.tokens.typography.caption,
+                        primary_max_w=row_draw_rect.w - 92.0 * density,
+                        secondary_max_w=0.0,
+                    ).primary
                     self._commands.text(
                         label,
                         row_draw_rect.x + (18.0 * density if not is_downloaded else 20.0 * density),
@@ -1370,25 +1580,32 @@ class SongSelectMenuView:
                     self._draw_kebab_button(theme, dots_rect, hovered=dots_rect.contains(scene._mouse_x, scene._mouse_y), alpha=0.92)
                     scene._replay_rects.append((row_draw_rect.x, row_draw_rect.y, row_draw_rect.w, row_draw_rect.h, f"online:{item.replay_id}"))
                     scene._replay_action_rects.append((dots_rect.x, dots_rect.y, dots_rect.w, dots_rect.h, f"online:{item.replay_id}"))
-                    ry += row_h + row_gap
                 scene._replay_total_h = 8.0 * density + len(online_items) * row_h + max(0, len(online_items) - 1) * row_gap + 8.0 * density
             elif replays:
                 replay_dir = replay_dir_for_set(bset.directory)
                 selected_replay_entities = scene.selected_replay_entity_keys()
                 row_h = 36.0 * density
                 row_gap = 4.0 * density
-                ry = section_rect.y + 8.0 * density - scene._replay_scroll_current
-                for rp in replays:
+                row_top_pad = 8.0 * density
+                row_pitch = row_h + row_gap
+                row_start, row_end = self._visible_replay_row_range(
+                    scene,
+                    total_rows=len(replays),
+                    row_h=row_h,
+                    row_gap=row_gap,
+                    top_pad=row_top_pad,
+                    section_h=section_rect.h,
+                )
+                if row_end > row_start:
+                    profiler.count("song_select.info_panel.replay_rows.iterated", row_end - row_start)
+                for item_idx in range(row_start, row_end):
+                    rp = replays[item_idx]
                     full_path = str(replay_dir / rp)
+                    ry = section_rect.y + row_top_pad - scene._replay_scroll_current + item_idx * row_pitch
+                    row_rect = Rect(section_rect.x + 4.0 * density, ry, section_rect.w - 8.0 * density, row_h)
+                    visible_replay_rows += 1
                     entity_info = scene._replay_entity_info(full_path)
                     entity_key = entity_info[0] if entity_info is not None else full_path
-                    row_rect = Rect(section_rect.x + 4.0 * density, ry, section_rect.w - 8.0 * density, row_h)
-                    if row_rect.bottom < visible_top:
-                        ry += row_h + row_gap
-                        continue
-                    if row_rect.y > visible_bottom:
-                        break
-                    visible_replay_rows += 1
                     is_sel = entity_key in selected_replay_entities
                     row_hover = row_rect.contains(scene._mouse_x, scene._mouse_y)
                     row_anim = _hover_anim(scene, f"info.replay.{full_path}", row_hover, speed=0.22)
@@ -1419,13 +1636,19 @@ class SongSelectMenuView:
                         label_text = f"{summary.player_name}  {scene.mod_string(summary.mods) or '+NM'}"
                     elif full_path in scene._replay_summary_loading:
                         label_text = f"{Path(rp).stem}  Loading..."
-                    label = _truncate_text(text, label_text, layout.context.tokens.typography.body_s, row_draw_rect.w - 76.0 * density)
+                    label = self._replay_text_layout(
+                        text,
+                        primary=label_text,
+                        primary_size=layout.context.tokens.typography.body_s,
+                        secondary_size=layout.context.tokens.typography.caption,
+                        primary_max_w=row_draw_rect.w - 76.0 * density,
+                        secondary_max_w=0.0,
+                    ).primary
                     self._commands.text(label, row_draw_rect.x + 18.0 * density, row_draw_rect.y + 8.0 * density, layout.context.tokens.typography.body_s, color=colors.text_primary if is_sel else colors.text_secondary, alpha=0.92 + 0.06 * row_anim)
                     dots_rect = Rect(row_draw_rect.right - 28.0 * density, row_draw_rect.y + 7.0 * density, 20.0 * density, 20.0 * density)
                     self._draw_kebab_button(theme, dots_rect, hovered=dots_rect.contains(scene._mouse_x, scene._mouse_y), alpha=0.88)
                     scene._replay_rects.append((row_draw_rect.x, row_draw_rect.y, row_draw_rect.w, row_draw_rect.h, full_path))
                     scene._replay_action_rects.append((dots_rect.x, dots_rect.y, dots_rect.w, dots_rect.h, full_path))
-                    ry += row_h + row_gap
                 scene._replay_total_h = 8.0 * density + len(replays) * row_h + max(0, len(replays) - 1) * row_gap + 8.0 * density
             else:
                 self._commands.text("No local replays yet", section_rect.x + 12.0 * density, section_rect.y + 14.0 * density, layout.context.tokens.typography.body_m, color=colors.text_muted)

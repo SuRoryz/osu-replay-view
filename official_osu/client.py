@@ -184,10 +184,28 @@ class OfficialOsuClient:
     def score_state(self, beatmap_id: int) -> OsuOfficialScoreState:
         return self._score_states.setdefault(int(beatmap_id), OsuOfficialScoreState())
 
-    def download_score_replay(self, score: OsuOfficialScore, target_dir: str) -> None:
+    @staticmethod
+    def _score_download_path_matches_score(local_path: str | None, expected_map_md5: str = "") -> bool:
+        if not local_path:
+            return False
+        path = Path(local_path)
+        if not path.is_file():
+            return False
+        expected_map_md5 = str(expected_map_md5 or "").strip().lower()
+        if not expected_map_md5:
+            return True
+        try:
+            from replay.data import ReplayData
+
+            summary = ReplayData.peek_summary(str(path))
+        except Exception:
+            return False
+        return str(summary.map_md5 or "").strip().lower() == expected_map_md5
+
+    def download_score_replay(self, score: OsuOfficialScore, target_dir: str, *, expected_map_md5: str = "") -> None:
         if score.is_downloading:
             return
-        existing_path = self._existing_score_download_path(score, target_dir)
+        existing_path = self._existing_score_download_path(score, target_dir, expected_map_md5=expected_map_md5)
         if existing_path:
             score.local_path = existing_path
             score.is_downloaded = True
@@ -231,23 +249,42 @@ class OfficialOsuClient:
                     downloaded += len(chunk)
                     progress = 0.0 if total <= 0 else min(1.0, downloaded / total)
                     self._queue.put(("score_download_progress", (score.score_id, progress)))
+            if not self._score_download_path_matches_score(local_path, expected_map_md5):
+                try:
+                    Path(local_path).unlink()
+                except OSError:
+                    pass
+                raise ValueError("Downloaded official replay does not match the selected difficulty.")
             return score.score_id, local_path
 
         self._spawn(f"score_download:{int(score.score_id)}", worker)
 
-    def _existing_score_download_path(self, score: OsuOfficialScore, target_dir: str) -> str | None:
-        if score.local_path and Path(score.local_path).is_file():
+    def _existing_score_download_path(
+        self,
+        score: OsuOfficialScore,
+        target_dir: str,
+        *,
+        expected_map_md5: str = "",
+    ) -> str | None:
+        if self._score_download_path_matches_score(score.local_path, expected_map_md5):
             return score.local_path
+        score.local_path = None
         remembered = self.local_state.downloaded_path_for_score(int(score.score_id))
-        if remembered and Path(remembered).is_file():
+        if self._score_download_path_matches_score(remembered, expected_map_md5):
             return remembered
+        if remembered:
+            self.local_state.forget_download(int(score.score_id))
         if score.legacy_score_id:
             remembered_legacy = self.local_state.downloaded_path_for_score(int(score.legacy_score_id))
-            if remembered_legacy and Path(remembered_legacy).is_file():
+            if self._score_download_path_matches_score(remembered_legacy, expected_map_md5):
                 return remembered_legacy
+            if remembered_legacy:
+                self.local_state.forget_download(int(score.legacy_score_id))
         known_path = self._score_download_paths.get(int(score.score_id))
-        if known_path and Path(known_path).is_file():
+        if self._score_download_path_matches_score(known_path, expected_map_md5):
             return known_path
+        if known_path:
+            self._score_download_paths.pop(int(score.score_id), None)
         root = Path(target_dir)
         if not root.is_dir():
             return None
@@ -257,7 +294,9 @@ class OfficialOsuClient:
         for path in root.glob("*.osr"):
             name = path.name
             for candidate_id in candidate_ids:
-                if name.endswith(f"[{candidate_id}].osr") or name == f"score-{candidate_id}.osr":
+                if (
+                    name.endswith(f"[{candidate_id}].osr") or name == f"score-{candidate_id}.osr"
+                ) and self._score_download_path_matches_score(str(path), expected_map_md5):
                     return str(path)
         return None
 

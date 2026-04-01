@@ -87,6 +87,7 @@ class AppSettings:
     gameplay_background_image: bool = False
     gameplay_background_dim: float = 0.65
     gameplay_cursor_trail: bool = True
+    multireplay_remove_player_on_first_miss: bool = True
     gameplay_cursor_trail_max_len: int = 256
     gameplay_circle_bloom: float = 0.50
     skin_circle_fill_color: tuple[float, float, float] = _DEFAULT_SKIN_VISUALS.circle_fill_color
@@ -150,6 +151,12 @@ class AppSettings:
             gameplay_background_image=bool(data.get("gameplay_background_image", defaults.gameplay_background_image)),
             gameplay_background_dim=_clamp01(data.get("gameplay_background_dim", defaults.gameplay_background_dim)),
             gameplay_cursor_trail=bool(data.get("gameplay_cursor_trail", defaults.gameplay_cursor_trail)),
+            multireplay_remove_player_on_first_miss=bool(
+                data.get(
+                    "multireplay_remove_player_on_first_miss",
+                    defaults.multireplay_remove_player_on_first_miss,
+                )
+            ),
             gameplay_cursor_trail_max_len=max(8, min(256, int(data.get("gameplay_cursor_trail_max_len", defaults.gameplay_cursor_trail_max_len)))),
             gameplay_circle_bloom=_clamp01(data.get("gameplay_circle_bloom", defaults.gameplay_circle_bloom)),
             skin_circle_fill_color=_clamp_rgb(data.get("skin_circle_fill_color", defaults.skin_circle_fill_color), defaults.skin_circle_fill_color),
@@ -485,6 +492,14 @@ class App(mglw.WindowConfig):
             self._set_nickname(auth.account.username)
 
     def _handle_official_osu_event(self, event_type: str, payload: dict) -> None:
+        def _friendly_error_text(value: object, fallback: str) -> str:
+            text = str(value or "").strip()
+            if not text:
+                return fallback
+            if " for url:" in text:
+                text = text.split(" for url:", 1)[0].strip()
+            return text[:140]
+
         if event_type == "auth_linked":
             account = payload.get("account")
             username = getattr(account, "username", "") if account is not None else ""
@@ -516,7 +531,8 @@ class App(mglw.WindowConfig):
             self.alert_overlay.show_message("Official replay downloaded.")
         elif event_type == "score_download_failed":
             self.alert_overlay.hide_progress()
-            self.alert_overlay.show_message("Official replay download failed.")
+            reason = _friendly_error_text(payload.get("error"), "Unknown error")
+            self.alert_overlay.show_message(f"Official replay download failed: {reason}", ttl=3.0)
 
     def _start_map_scan(self) -> None:
         if self._map_scan_thread is not None and self._map_scan_thread.is_alive():

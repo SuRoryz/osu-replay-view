@@ -1,8 +1,11 @@
 import io
 from email.message import Message
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
+from official_osu.client import OfficialOsuClient
+from official_osu.models import OsuOfficialScore
 from server.app.config import Settings
 from server.app.map_mirrors import MirrorResolver, MirrorResolverError
 from server.app.osu_auth import OsuAuthStore, OsuIdentity, OsuSession
@@ -129,6 +132,37 @@ def test_osu_api_client_download_score_falls_back_between_endpoints(tmp_path: Pa
     ]
     assert response.filename == "score.osr"
     assert response.payload == b"osr"
+
+
+def test_existing_official_score_download_discards_stale_mapping(tmp_path: Path) -> None:
+    stale_path = tmp_path / "score-42.osr"
+    stale_path.write_bytes(b"stale")
+    valid_path = tmp_path / "ri4ka [42].osr"
+    valid_path.write_bytes(b"valid")
+
+    forgotten: list[int] = []
+
+    def forget_download(score_id: int) -> None:
+        forgotten.append(int(score_id))
+        local_state.score_downloads.pop(str(int(score_id)), None)
+
+    local_state = SimpleNamespace(
+        score_downloads={"42": str(stale_path)},
+        downloaded_path_for_score=lambda score_id: local_state.score_downloads.get(str(int(score_id))),
+        forget_download=forget_download,
+    )
+
+    client = OfficialOsuClient.__new__(OfficialOsuClient)
+    client.local_state = local_state
+    client._score_download_paths = {}
+    client._score_download_path_matches_score = lambda local_path, expected_map_md5="": local_path == str(valid_path)
+
+    score = OsuOfficialScore(score_id=42, username="ri4ka")
+    resolved = client._existing_score_download_path(score, str(tmp_path), expected_map_md5="expected-md5")
+
+    assert resolved == str(valid_path)
+    assert forgotten == [42]
+    assert local_state.score_downloads == {}
 
 
 class _FakeResponse:

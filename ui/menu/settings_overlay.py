@@ -40,6 +40,7 @@ _GRAPHICS_TOGGLES = (
     ("gameplay_background_bloom", "Background bloom"),
     ("gameplay_background_image", "Beatmap background image"),
     ("gameplay_cursor_trail", "Cursor trail"),
+    ("multireplay_remove_player_on_first_miss", "Remove player on first miss"),
 )
 _GRAPHICS_SLIDERS = (
     ("gameplay_background_dim", "Background dim"),
@@ -2044,7 +2045,11 @@ class SettingsOverlay:
                     else (
                         "Uses the beatmap background instead of the solid fill."
                         if key_name == "gameplay_background_image"
-                        else "Show or hide the cursor trail behind cursors."
+                        else (
+                            "Show or hide the cursor trail behind cursors."
+                            if key_name == "gameplay_cursor_trail"
+                            else "Removes players from loeaderboard in multireplay mode on first miss"
+                        )
                     )
                 ),
                 "row_rect": row_rect,

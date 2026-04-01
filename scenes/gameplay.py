@@ -426,6 +426,9 @@ class GameplayScene(Scene):
                     participants: list[_GameplayParticipant] = []
                     danser_participant: _GameplayParticipant | None = None
                     perfect_participant: _GameplayParticipant | None = None
+                    eliminate_on_miss = self._multi_replay and bool(
+                        getattr(self.app.settings, "multireplay_remove_player_on_first_miss", True)
+                    )
 
                     for replay_path in self._replay_paths:
                         if not Path(replay_path).is_file():
@@ -461,7 +464,7 @@ class GameplayScene(Scene):
                                     hp=_mod_hp,
                                     replay=judged_replay,
                                     judge=judge,
-                                    eliminate_on_miss=self._multi_replay,
+                                    eliminate_on_miss=eliminate_on_miss,
                                 ),
                                 missed_circle_indices=judge.missed_indices,
                                 hs_events=hs_events,
@@ -490,7 +493,7 @@ class GameplayScene(Scene):
                                 hp=_mod_hp,
                                 replay=None,
                                 judge=None,
-                                eliminate_on_miss=self._multi_replay,
+                                eliminate_on_miss=eliminate_on_miss,
                             ),
                             missed_circle_indices=set(),
                             hs_events=list(render_data.hitsound_events),
@@ -2590,7 +2593,12 @@ class GameplayScene(Scene):
                         self._audio.cleanup()
                         self._audio = None
                     from scenes.song_select import SongSelectScene
-                    self.app.switch_scene(SongSelectScene(self.app))
+                    self.app.switch_scene(
+                        SongSelectScene(
+                            self.app,
+                            initial_beatmap_md5=self._binfo.beatmap_md5,
+                        )
+                    )
                     return
 
             self.ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
